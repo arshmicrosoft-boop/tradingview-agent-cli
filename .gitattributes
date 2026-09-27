@@ -1,0 +1,14 @@
+# Normalise line endings in the repository; the working tree stays LF too.
+# Without this, Windows checkouts flip every file to CRLF and every commit
+# warns about it, which trains you to ignore warnings that once mattered.
+* text=auto eol=lf
+
+# PowerShell is the one place CRLF is genuinely correct.
+*.ps1 text eol=crlf
+
+# Evidence, not source: never touch it.
+*.jsonl -text
+
+# Caches and local state that must never be committed even if forced.
+research/data/ binary
+frontend/data/ binary

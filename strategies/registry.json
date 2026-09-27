@@ -1,0 +1,53 @@
+{
+  "$comment": "Machine-readable index of the strategy knowledge base. strategies/validate.mjs reconciles this against the filesystem in both directions: a card on disk that is not listed here fails verify, and so does an entry here with no card. SCHEMA.md is the format spec; this file is the index the linter checks. Hand-editable, but `node strategies/validate.mjs` is the arbiter.",
+  "schema_version": 1,
+  "protocol": "v1",
+  "protocol_hash": "1e42a7d31d851b9b",
+  "dataset": "binance BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps",
+  "champion": null,
+  "champion_note": "No card has ever passed the gate. The linter enforces this: it fails if any card has status `promoted` while this is null, and fails if this is non-null while no card is promoted. Both directions are checked so the headline cannot drift from the cards.",
+  "noise_floor": {
+    "note": "The two negative controls define what a strategy with no information scores on this harness. It is NOT 1.0, because costs are charged on both sides of a churn-heavy trade stream. Read every profit factor against this band.",
+    "random": { "profit_factor": 0.751, "sharpe": -0.057, "trades": 2270, "unmet": 21 },
+    "always_long": { "profit_factor": 0.837, "sharpe": -0.028, "trades": 2278, "unmet": 20 }
+  },
+  "counts": {
+    "total": 15,
+    "falsified": 11,
+    "queued": 1,
+    "proposed": 1,
+    "blocked": 2
+  },
+  "next": "P-003",
+  "next_note": "P-002 closed the unit hypothesis: the k ladder is flat (PF 0.899-0.935 bidirectional, 0.917-0.960 long-only against donchian's 0.917), so normalizing a threshold by ATR changes nothing. Every backlog idea assuming difficulty scales with volatility can be set aside. P-003 is the last queued card.",
+  "cards": [
+    { "file": "cards/controls/alwayslong.md", "slug": "alwayslong", "id": "C-001", "status": "falsified", "kind": "control" },
+    { "file": "cards/controls/random.md", "slug": "random", "id": "C-002", "status": "falsified", "kind": "control" },
+    { "file": "cards/tested/sma-cross.md", "slug": "sma-cross", "id": "T-001", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/tested/donchian.md", "slug": "donchian", "id": "T-002", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/tested/sweep-reversal.md", "slug": "sweep-reversal", "id": "T-003", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/tested/trend-pullback.md", "slug": "trend-pullback", "id": "T-004", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/tested/vol-expansion.md", "slug": "vol-expansion", "id": "T-005", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/tested/long-with-stop.md", "slug": "long-with-stop", "id": "T-006", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/tested/sideways-liquidity-reversal.md", "slug": "sideways-liquidity-reversal", "id": "T-007", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/proposed/serial-correlation-sign-flip.md", "slug": "serial-correlation-sign-flip", "id": "P-001", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/tested/vol-normalized-breakout.md", "slug": "vol-normalized-breakout", "id": "T-008", "status": "falsified", "kind": "hypothesis" },
+    { "file": "cards/proposed/selectivity-on-falsified-trigger.md", "slug": "selectivity-on-falsified-trigger", "id": "P-003", "status": "queued", "kind": "hypothesis" },
+    { "file": "cards/proposed/weekend-liquidity-reversal.md", "slug": "weekend-liquidity-reversal", "id": "P-004", "status": "proposed", "kind": "hypothesis" },
+    { "file": "cards/proposed/cross-sectional-relative-value.md", "slug": "cross-sectional-relative-value", "id": "P-005", "status": "blocked", "kind": "hypothesis" },
+    { "file": "cards/proposed/funding-basis-crowding.md", "slug": "funding-basis-crowding", "id": "P-006", "status": "blocked", "kind": "hypothesis" }
+  ],
+  "exit_model": {
+    "note": "Owned by the simulator. A strategy cannot express any of this, which is why exit-placement hypotheses are `blocked` rather than untested.",
+    "stop": "2 x ATR(14)",
+    "time_exit_bars": 96,
+    "time_exit_hours": 24,
+    "source": "research/run.mjs (--hold default 96) and research/protocol.v1.json (risk.max_hold_bars 96). research/harness.mjs DEFAULTS.maxHoldBars is 40, but that value is only reached when a caller omits maxHoldBars; `npm run research:all` does not pass --hold, so the recorded runs used 96."
+  },
+  "v2_blocked_by": {
+    "exit_placement": ["P-005 note: fixed 2xATR stop + 96-bar time out guarantees you never hold the tail of a trend"],
+    "cross_sectional": ["P-005"],
+    "forced_flow_data": ["P-006"],
+    "rule": "A v2 is justified only when a hypothesis that already has a written, believed mechanism genuinely cannot be expressed. It runs as a separate generation with its own results archive, and is never mixed with v1."
+  }
+}

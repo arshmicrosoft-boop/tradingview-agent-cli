@@ -1,0 +1,21 @@
+{
+  "_comment": "Hard limits for paper-trade.mjs. The risk gate runs BEFORE any UI interaction; if it blocks, nothing is clicked.",
+
+  "kill_switch": false,
+
+  "max_open_orders": 1,
+  "max_total_margin_usd": 25,
+  "max_order_notional_usd": 25,
+
+  "risk_per_trade_pct": 0.005,
+  "stop_atr_mult": 2.0,
+  "atr_period": 14,
+  "max_leverage": 10,
+  "allow_fractional": true,
+
+  "_max_open_orders_note": "Resting orders are counted from Orders margin, because Paper.orders-table renders empty in TV Desktop 38.2.2. Orders margin > 0 means at least one live order.",
+  "_max_total_margin_note": "Compared against Orders margin + Account margin (both read from the live account summary).",
+  "_max_order_notional_note": "qty * price for the order about to be placed.",
+  "_IMPORTANT_notional_dominates": "With max_order_notional_usd = 25 and equity ~109, the notional cap binds long before risk_per_trade_pct does. A '0.5% risk' trade is really risking ~$0.03, not $0.55. The notional cap — not the risk budget — is the real ceiling. Raise notional or equity before the risk budget means anything.",
+  "_allow_fractional_note": "Whole units for share-like instruments; fractional where the venue allows it (crypto). A $25 notional cap cannot buy one unit of a $100 stock, so expensive instruments need fractional sizing or whole-unit sizing will refuse."
+}

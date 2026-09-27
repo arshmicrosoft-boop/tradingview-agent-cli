@@ -1,0 +1,30 @@
+{
+  "name": "tradingview-research-execution",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Research and paper-execution layers for TradingView. Research cannot place orders; execution cannot be reached from research.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "verify": "node verify.mjs",
+
+    "test:data": "node research/data.mjs",
+    "test:risk": "node research/risk-engine.mjs",
+    "test:harness": "node research/harness.mjs",
+    "test:gate": "node research/gate.mjs",
+    "test:exec": "node execution/paper-trade.mjs selftest",
+    "test": "npm run verify",
+
+    "research": "node research/run.mjs",
+    "research:all": "node research/run.mjs --all --tf 15m",
+
+    "tv:launch": "powershell -ExecutionPolicy Bypass -File execution/launch-tv.ps1",
+    "web": "node frontend/server.mjs",
+    "trade:status": "node execution/paper-trade.mjs status",
+    "trade:account": "node execution/paper-trade.mjs account",
+    "trade:positions": "node execution/paper-trade.mjs positions",
+    "trade:propose": "node execution/paper-trade.mjs propose",
+    "mcp:handshake": "node execution/mcp-handshake.mjs"
+  },
+  "dependencies": {}
+}

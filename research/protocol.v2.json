@@ -67,7 +67,7 @@
     "MIN_SYMBOL_PASS_RATE": 0.6,
 
     "MIN_WF_CONSISTENCY": 60,
-    "MIN_WF_COVERAGE": 75,
+    "MIN_WF_COVERAGE": 100,
     "MIN_WF_EFFICIENCY": 0.40,
     "MIN_WF_FOLD_SHARPE": 0.30,
     "MIN_MC_PROFITABLE": 0.90,
@@ -92,15 +92,19 @@
       "folds": 4,
       "warmup_bars": 250,
       "objective": "sharpe",
-      "min_fold_coverage_pct": 75,
-      "why_coverage": "without it a strategy that goes silent out of sample scores 100% consistency across the folds that did fire; verified against a signal silent for the final 37% of the sample, which cleared every walk-forward criterion with perfect marks"
+      "min_fold_coverage_pct": 100,
+      "why_coverage": "a fold in which the strategy had no opinion is not evidence it worked. At 75 one completely dead fold still passed: with folds=4 a signal that traded for the first 80% of the sample and was then silent for the last 20% — one full fold window — reported consistency 100, coverage 75, meanOOS Sharpe 1.120 and an OOS/IS efficiency of 0.861, and passed all four walk-forward criteria with nothing failed. Reproduce it with the 'one dead fold' selftest. The bar is 100, so the only way to clear it is to have an opinion in every out-of-sample window. This is belt-and-braces with a second, independent defence in robustness.mjs: consistency divides by EVERY fold rather than by the folds that fired, and meanOosSharpe/efficiencyRatio/stationarityT average over every fold with silent folds contributing 0. Either defence alone would NOT have closed the hole — the dead-fold run still clears consistency 60, efficiency 0.40 and fold Sharpe 0.30 with the denominator fixed — so the bar is the load-bearing half and the statistics are the half that cannot be loosened by a future protocol edit.",
+      "silent_fold_policy": "a fold with zero out-of-sample trades is scored as a FAILED fold (return 0%, Sharpe 0), never excluded from the denominator"
     },
     "bootstrap": {
       "runs": 2000,
       "seed": 12345,
       "method": "block",
       "block_size_rule": "ceil(n^(1/3))",
-      "why_block": "trades arrive in clusters of consecutive bars within one trend, so iid resampling understates the tail"
+      "why_block": "trades arrive in clusters of consecutive bars within one trend, so iid resampling understates the tail",
+      "portfolio_model": "equal-weight additive: N independent per-symbol sub-accounts of one unit each, and the portfolio equity at every timestamp is the ARITHMETIC MEAN of the N equity curves. Total return is the mean of per-symbol returns; drawdown is taken on the averaged curve. Drawdowns are never summed, and N full accounts are never compounded into one account trading 1/N each.",
+      "why_not_pooled": "evidence.mjs states the rule v2 inherits: 'Drawdown and return are PATH properties and must NOT be pooled across symbols.' v2 broke it twice. First it concatenated five independent accounts with no weighting at all — a five-times-geared book, which the previous version's own note recorded as a median resampled drawdown of 99.5% against a worst single symbol of 80.6%, arithmetically impossible for a real equal-weight book. The fix over-corrected into a single account running N symbols at 1/N of its equity each, which is a different quantity in BOTH directions: where symbols draw down together that account pays (1-x/N)^N for N shocks of size x where the real book pays x, and where one symbol's drawdown is offset by another's gain in the same window its single shared equity base flatters the result. Measured on the real cached dataset (vol-normalized-breakout, 2583 pooled trades, 500 block resamples, seed 12345): the 1/N account reports a median portfolio drawdown of 70.47%, the equal-weight book 67.11%, the mean of the per-symbol drawdowns 78.13%. Averaging the curves is the model that satisfies the rule in both directions, and it carries a property the previous models did not: a genuine equal-weight book cannot be deeper than its worst component.",
+      "averaging_curves_not_drawdowns": "the mean of N per-symbol drawdowns is not the drawdown of any account and discards the ordering of the paths, which is the only thing a drawdown measures. The averaged curve keeps the ordering and is what an investor would have experienced. Both are reported (maxDrawdownP50Pct and the diagnostic maxDrawdownP50PctComponentsMean) so the difference is visible rather than asserted; on the real data quoted above they are 67.11% and 78.13%."
     },
     "deflated_sharpe": {
       "min_trials_floor": 15,

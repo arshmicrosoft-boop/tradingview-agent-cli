@@ -12,8 +12,8 @@ trades: 1557
 win_rate_pct: 23.4
 profit_factor: 0.97
 sharpe: -0.016
-max_drawdown_pct: 82.6
-total_return_pct: -99.3
+max_drawdown_pct: 42.63
+total_return_pct: -6.68
 gate: fail
 unmet: 19
 ---
@@ -108,6 +108,17 @@ No grid exported → measured at a single point → treated by the gate as unpro
 | symbols passing alone | ≥ 60% | failed |
 | parameter sensitivity | ≥ 30% | not measured — no grid |
 | calmar vs regime-matched hold | required | failed |
+
+**Basis note (2026-09-28).** `total_return_pct` (−6.68) and `max_drawdown_pct`
+(42.63) were re-measured on this strategy's latest v1 run after the portfolio
+model moved to an equal-weight additive book — return is the mean of the five
+per-symbol returns, max drawdown is the drawdown of the pointwise-averaged
+equity curve. The superseded figures (−99.3% and 82.6%) came from a 5×-geared
+pooled replay and must not be mixed with these. Trades, profit factor, Sharpe
+and the `fail` verdict are unchanged: they are per-run quantities and do not
+depend on the portfolio basis. The shallowest portfolio return in the set is not
+a positive result — the account still ruins, and the sign of the edge is still
+negative.
 
 ## Why it failed
 

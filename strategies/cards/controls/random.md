@@ -11,8 +11,8 @@ dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 2270
 profit_factor: 0.751
 sharpe: -0.057
-max_drawdown_pct: 81.43
-total_return_pct: -99.91
+max_drawdown_pct: 74.33
+total_return_pct: -72.89
 gate: fail
 unmet: 21
 ---
@@ -90,7 +90,7 @@ Exit is owned by the simulator — 2×ATR stop, 96-bar time out.
 - **Always.**
 - **Confusion risk:** a random side will occasionally produce a run that looks
   survivable over a short window. This card was run over 400 days precisely so
-  that such a coincidence is visible — over that span it returns −99.91%.
+  that such a coincidence is visible — over that span it returns −72.89%.
   A short-window random result is not evidence of anything, and the fact that
   this one is not is the point of running it.
 
@@ -104,9 +104,20 @@ Exit is owned by the simulator — 2×ATR stop, 96-bar time out.
 | sharpe | > 1.0 | −0.057 |
 | sharpe t-stat | > 2.0 | −2.72 |
 | sharpe LCB (95%) | > 0.3 | −0.098 |
-| symbols passing alone | ≥ 60% | 1/5 |
+| symbols passing alone | ≥ 60% | 0/5 |
 | cost survival | ≥ 40% | failed |
 | account survived | required | failed |
+
+**Basis note (2026-09-28).** `total_return_pct` (−72.89) and `max_drawdown_pct`
+(74.33) were re-measured on this control's latest v1 run after the portfolio
+model moved to an equal-weight additive book — return is the mean of the five
+per-symbol returns, max drawdown is the drawdown of the pointwise-averaged
+equity curve. The superseded figures (−99.91% and 81.43%) came from a 5×-geared
+pooled replay and must not be mixed with these. Trades, profit factor, Sharpe
+and the `fail` verdict are unchanged: they are per-run quantities and do not
+depend on the portfolio basis, so the noise-floor calibration this card exists
+to provide is unaffected. The `symbols passing alone` row above reads 0/5 on the
+current run, as the registry records it.
 
 ### The one thing this card is also evidence for
 

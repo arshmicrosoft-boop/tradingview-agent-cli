@@ -13,9 +13,30 @@
  * verdict on top, so any difference between a v1 and a v2 verdict is a
  * difference in the GATE, never a difference in the data.
  *
- * Results go to research/registry-v2/. The 15 cards in strategies/ cite v1 runs
- * and are not rewritten: v2 informs the next hypothesis, it does not
- * retroactively alter falsified evidence.
+ * Results go to research/registry-v2/. The 15 cards in strategies/ cite v1 runs.
+ *
+ * PROVENANCE, precisely, because the loose version of this claim was wrong.
+ * v2 is ADDITIVE: it introduces its own criteria, its own thresholds and its own
+ * archive, and it altered no v1 threshold. But v2 was not the only thing that
+ * touched the v1 numbers, and "v2 does not retroactively alter falsified
+ * evidence" overstated it. One v1 criterion's COMPUTATION was corrected: the
+ * `walk-forward consistency %` criterion was rewired from an inline splitter
+ * over the pooled five-symbol trade stream to `harness.walkForward` on the
+ * primary symbol. That changed the recorded value on 7 of 11 strategies, and
+ * `vol-normalized-breakout` crossed the bar (50 -> 0 against MIN_WF=50, taking
+ * it from 18 to 19 unmet criteria). The change was stricter, not looser; no
+ * overall verdict flipped; the owner accepted it rather than reverting it. See
+ * the `walk-forward consistency` block in evidence.mjs and the root README.md
+ * §"Why the gate fails".
+ *
+ * This does not show up in the protocol hash, and should not be read as if it
+ * would. `protocol.mjs:53` hashes the protocol JSON only, so it covers
+ * THRESHOLDS and not COMPUTATION, and `verify.mjs:155` only checks that the
+ * latest run per strategy cites the current hash. A metric can therefore change
+ * under an unchanged hash without `npm run verify` going red. That limitation is
+ * documented at length in the "WHAT THE HASH ACTUALLY COVERS" blocks in
+ * gate.mjs, evidence.mjs and registry.mjs; it is cross-referenced here, not
+ * restated.
  */
 
 import { readdirSync, readFileSync } from "node:fs";

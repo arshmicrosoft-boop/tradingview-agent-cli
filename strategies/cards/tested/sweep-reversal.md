@@ -12,8 +12,8 @@ trades: 1565
 win_rate_pct: 23.1
 profit_factor: 0.64
 sharpe: -0.138
-max_drawdown_pct: 80.3
-total_return_pct: -99.9
+max_drawdown_pct: 71.81
+total_return_pct: -71.53
 gate: fail
 unmet: 20
 ---
@@ -119,6 +119,16 @@ Grid tested: `lookback ∈ {15,20,25}` × `volMult ∈ {1.5,2.0,2.5}`.
 | symbols passing alone | ≥ 60% | failed |
 | degradation (test ÷ train) | ≥ 0.25 | failed |
 | cost survival | ≥ 40% | failed |
+
+**Basis note (2026-09-28).** `total_return_pct` (−71.53) and `max_drawdown_pct`
+(71.81) were re-measured on this strategy's latest v1 run after the portfolio
+model moved to an equal-weight additive book — return is the mean of the five
+per-symbol returns, max drawdown is the drawdown of the pointwise-averaged
+equity curve. The superseded figures (−99.9% and 80.3%) came from a 5×-geared
+pooled replay and must not be mixed with these. Trades, profit factor, Sharpe
+and the `fail` verdict are unchanged: they are per-run quantities and do not
+depend on the portfolio basis, and the account still ruins on this run, so the
+reading below stands.
 
 ## Why it failed
 

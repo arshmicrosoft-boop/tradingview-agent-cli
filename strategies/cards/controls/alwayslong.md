@@ -11,8 +11,8 @@ dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 2278
 profit_factor: 0.837
 sharpe: -0.028
-max_drawdown_pct: 83.03
-total_return_pct: -99.77
+max_drawdown_pct: 71.41
+total_return_pct: -55.22
 gate: fail
 unmet: 20
 ---
@@ -112,6 +112,17 @@ The full list of unmet criteria is recorded verbatim in
 `research/registry/_control_alwayslong/runs.jsonl` under `failed`, which is the
 authoritative copy. The card summarises; the registry decides.
 
+**Basis note (2026-09-28).** `total_return_pct` (−55.22) and `max_drawdown_pct`
+(71.41) were re-measured on this control's latest v1 run after the portfolio
+model moved to an equal-weight additive book — return is the mean of the five
+per-symbol returns, max drawdown is the drawdown of the pointwise-averaged
+equity curve. The superseded figures (−99.77% and 83.03%) came from a 5×-geared
+pooled replay and must not be mixed with these. Trades, profit factor, Sharpe
+and the `fail` verdict are unchanged: they are per-run quantities and do not
+depend on the portfolio basis. The account still reaches the circuit breaker
+(`account survived (no ruin)` and `symbols ruined` are both still unmet), so
+this control still fails exactly as it must.
+
 ## Why it failed
 
 Because there is nothing to fail with. The signal is a constant, so the trade
@@ -127,7 +138,7 @@ misreading of this repo:
    re-enter every time it exits is exactly the mechanism that produced PF 0.837
    instead of 1.0. That is the cost model doing its job.
 3. **The risk envelope finished the job.** The 1%-risk, 10×-leverage
-   configuration turned a mildly negative expectancy into −99.77% and a circuit
+   configuration turned a mildly negative expectancy into −55.22% and a circuit
    breaker. A strategy cannot choose a better outcome once its expectancy is
    negative, and no amount of position sizing changes the sign of the edge.
 
@@ -141,7 +152,7 @@ point. It is highly informative *about the instrument*, which is why it exists.
   ratio to costs and whipsaw. Any real strategy must clear that bar, not 1.0.
 - **Sharpe −0.028 over 2,278 trades.** The absence of an edge is measured here
   with the same precision as its presence would be.
-- **The risk envelope, not the signal, produced the −99.77% return.** A 1%-risk,
+- **The risk envelope, not the signal, produced the −55.22% return.** A 1%-risk,
   10×-leverage configuration applied to a signal with negative expectancy
   compounds to ruin. This is the clearest single illustration in the repo that
   the drawdown column measures the envelope, and the profit factor measures the

@@ -12,8 +12,8 @@ trades: 1984
 win_rate_pct: 21.3
 profit_factor: 1.013
 sharpe: -0.023
-max_drawdown_pct: 82.75
-total_return_pct: -99.36
+max_drawdown_pct: 56.91
+total_return_pct: -1.33
 gate: fail
 unmet: 20
 ---
@@ -105,6 +105,15 @@ failures that matter:
 
 t-stat −1.02 over 1,984 trades is a tight confidence interval around zero. This
 is not "not enough data" — this is enough data.
+
+**Basis note (2026-09-28).** `total_return_pct` (−1.33) and `max_drawdown_pct`
+(56.91) above were re-measured on this strategy's latest v1 run after the
+portfolio model moved to an equal-weight additive book — return is the mean of
+the five per-symbol returns, max drawdown is the drawdown of the
+pointwise-averaged equity curve. The superseded figures (−99.36% and 82.75%)
+came from a 5×-geared pooled replay and must not be mixed with these. Trades,
+profit factor, Sharpe and the `fail` verdict are unchanged: they are per-run
+quantities and do not depend on the portfolio basis.
 
 ## Why it failed
 

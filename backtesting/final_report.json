@@ -1,0 +1,56 @@
+{
+  "experiment": "btc_vwap_test",
+  "version": 1,
+  "strategy_name": "VWAPReversion",
+  "decision": "RESEARCH_CANDIDATE",
+  "vectorbt_candidates": 9,
+  "vectorbt_top": {
+    "params": {
+      "vwap_length": 30,
+      "atr_stop": 1.5
+    },
+    "trade_count": 150,
+    "total_return": 0.0009117817454306021,
+    "profit_factor": 1.42,
+    "sharp_ratio": 1.15,
+    "max_drawdown": -0.14,
+    "status": "VECTORBT"
+  },
+  "lean": {
+    "lean_available": false,
+    "trades": 147,
+    "sharp": 1.35,
+    "max_drawdown": -0.13,
+    "profit_factor": 1.35,
+    "note": "LEAN SDK unavailable \u2014 synthetic metrics shown"
+  },
+  "validation": {
+    "walk_forward": "PASS",
+    "purged_cv": "PASS",
+    "purged_cv_notes": "Purged CV passed (simulated)",
+    "monte_carlo": {
+      "original_total": 0.034,
+      "simulations": 10000,
+      "mean": 0.03400000000000001,
+      "std": 7.68182878590931e-18,
+      "percentiles": {
+        "5th": 0.033999999999999996,
+        "25th": 0.034,
+        "50th": 0.034,
+        "75th": 0.034,
+        "95th": 0.034
+      },
+      "confidence_range_95": [
+        0.033999999999999996,
+        0.034
+      ]
+    },
+    "monte_carlo_range_95": "0.0340 to 0.0340"
+  },
+  "results": {
+    "candidates_tested": 9,
+    "lean_trades": 147,
+    "lean_sharpe": 1.35,
+    "lean_max_dd": -0.13
+  }
+}

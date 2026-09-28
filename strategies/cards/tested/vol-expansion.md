@@ -12,8 +12,8 @@ trades: 686
 win_rate_pct: 16.5
 profit_factor: 0.69
 sharpe: -0.076
-max_drawdown_pct: 80.0
-total_return_pct: -95.2
+max_drawdown_pct: 48.58
+total_return_pct: -36.18
 gate: fail
 unmet: 20
 ---
@@ -110,6 +110,16 @@ No grid exported → single parameter point → unproven by the gate's definitio
 | trades (per-symbol legs) | ≥ 500 | **failed — 686 total across 5 symbols** |
 | symbols passing alone | ≥ 60% | failed |
 | parameter sensitivity | ≥ 30% | not measured — no grid |
+
+**Basis note (2026-09-28).** `total_return_pct` (−36.18) and `max_drawdown_pct`
+(48.58) were re-measured on this strategy's latest v1 run after the portfolio
+model moved to an equal-weight additive book — return is the mean of the five
+per-symbol returns, max drawdown is the drawdown of the pointwise-averaged
+equity curve. The superseded figures (−95.2% and 80.0%) came from a 5×-geared
+pooled replay and must not be mixed with these. Trades, profit factor, Sharpe
+and the `fail` verdict are unchanged: they are per-run quantities and do not
+depend on the portfolio basis, and the account still ruins on this run, so the
+reading below stands.
 
 ## Why it failed
 

@@ -169,65 +169,323 @@ function resampleIdx(n, rnd, { method, blockSize }) {
   return out;
 }
 
+// ------------------------------------------------------------ symbol groups
+
 /**
- * Split a trade list into independent per-symbol groups.
+ * Split a trade list into independent per-symbol groups, each carrying ITS OWN
+ * returns and notionals.
  *
- * This is the difference between measuring a portfolio and measuring a levered
- * account. `evidence.mjs` already states the rule for the equity curve —
- * "drawdown and return are PATH properties and must NOT be pooled across
- * symbols" — and the first version of this file broke it: it concatenated five
- * independent 1000-equity accounts and compounded all of their fractional
- * returns into ONE curve with no 1/N weighting, which is a portfolio with five
- * times the capital in it. The result was arithmetically impossible as a
- * portfolio statistic: on the real data the pooled median drawdown came out at
- * 99.5% while the worst single symbol was 80.6% and the best was 34.4%. A
- * genuine equal-weight book cannot be deeper than its worst component.
+ * WHY THE GROUPS CARRY THEIR OWN NUMBERS
  *
- * So: resample WITHIN each symbol (blocks never straddle a symbol boundary),
- * then weight every trade by 1/N and replay the merged events in time order.
+ * The first version of this file located a symbol's slice of the pooled
+ * fractional-return array by index arithmetic:
+ *
+ *     const start = trades.indexOf(g.rows[0]);
+ *     const pooled.slice(start, start + g.rows.length)
+ *
+ * That is correct only while every symbol's trades are CONTIGUOUS in the pooled
+ * list. They are today, but by accident: `evidence.mjs` adds a `barOffset` per
+ * symbol that pushes the five windows apart, so the contiguity is a side effect
+ * of a data-loading detail, not an invariant anything checked. On interleaved
+ * data the same code misattributed 2578 of 2583 pooled trades and moved the
+ * median portfolio drawdown from 70.47% to 80.71% on the real cached dataset,
+ * with no error raised and no number that looked wrong. Reproduce it with the
+ * selftest's "old index-arithmetic slice" check below.
+ *
+ * So a group's returns are now attached to that group's OWN TRADES, by
+ * identity, and `assertGroups` proves the pairing trade-by-trade before any
+ * resampling happens. See `symbolOrdering` for the contiguity report, which is
+ * now a DIAGNOSTIC rather than a load-bearing assumption.
  */
-function groupBySymbol(trades) {
+function groupBySymbol(trades, fracs) {
   const by = new Map();
-  for (const t of trades) {
+  trades.forEach((t, i) => {
     const k = t.symbol ?? "_single";
-    if (!by.has(k)) by.set(k, []);
-    by.get(k).push(t);
-  }
-  return [...by.entries()].map(([symbol, rows]) => ({ symbol, rows }));
+    let g = by.get(k);
+    if (!g) { g = { symbol: k, rows: [], fracs: [], notionals: [], times: [] }; by.set(k, g); }
+    g.rows.push(t);
+    g.fracs.push(fracs[i]);
+    g.notionals.push(Math.abs((t.entry ?? 0) * (t.qty ?? 0)));
+    g.times.push(tradeTime(t, g.rows.length - 1));
+  });
+  return [...by.values()];
 }
 
-/** One resampled portfolio event stream, in time order, equal-weighted. */
-function resamplePortfolio(groups, fracsOf, rnd, { method }, blockSizeFor) {
-  const nGroups = groups.length;
-  const events = [];
+/**
+ * When a trade happened.
+ *
+ * `evidence.mjs` stamps `time` (exit time plus a per-symbol barOffset) on every
+ * pooled trade, which is the normal case. Raw `harness.simulate` trades carry
+ * only `entryTime`/`exitTime`, so those are the fallbacks. With no timestamp at
+ * whatsoever, the only ordering that exists is the order the trades were
+ * supplied in, and pretending otherwise (collapsing every trade onto t=0, say)
+ * would destroy the path and silently zero its drawdown.
+ */
+function tradeTime(t, position) {
+  if (Number.isFinite(t.time)) return t.time;
+  if (Number.isFinite(t.exitTime)) return t.exitTime;
+  if (Number.isFinite(t.entryTime)) return t.entryTime;
+  return position;
+}
+
+/**
+ * Group, verify, and report. Every consumer goes through this, so no caller can
+ * resample a group whose returns are not its own.
+ *
+ * `assertGroups` is exported only so the selftest can prove it actually throws
+ * on a mis-attributed return; nothing in the runner calls it directly.
+ */
+export function groupTradesBySymbol(trades, initialEquity) {
+  const { fracs, basis } = fractionalReturns(trades, initialEquity);
+  const groups = groupBySymbol(trades, fracs);
+  assertGroups(groups, trades, initialEquity);
+  return { groups, fracs, basis, ordering: symbolOrdering(trades) };
+}
+
+/**
+ * Loud invariant checks, run before a single trade is resampled.
+ *
+ * Every failure mode here used to be a silently wrong number rather than an
+ * error, which is why each check names the quantity that no longer lines up:
+ *
+ *   1. no trade dropped or duplicated while grouping;
+ *   2. the return used for a trade is THAT trade's own return — recomputed from
+ *      the trade itself, not sliced out of a pooled array by index. This is the
+ *      check the old code could not have passed on interleaved data;
+ *   3. each group's trades are in non-decreasing time order, because the block
+ *      bootstrap resamples a time-ordered path and reordering one makes the
+ *      block meaningless.
+ *
+ * Contiguity ACROSS symbols is deliberately NOT required: grouping by identity
+ * handles interleaving correctly, so throwing on it would reject valid input.
+ * It is reported by `symbolOrdering` instead.
+ */
+export function assertGroups(groups, trades, initialEquity) {
+  const grouped = groups.reduce((a, g) => a + g.rows.length, 0);
+  if (grouped !== trades.length) {
+    throw new Error(
+      `symbol grouping lost or duplicated trades: ${grouped} grouped vs ${trades.length} supplied`);
+  }
   for (const g of groups) {
-    const n = g.rows.length;
-    const idx = resampleIdx(n, rnd, { method, blockSize: blockSizeFor(n) });
-    for (const i of idx) {
-      // 1/N: equal capital per symbol, so the book is NOT geared by N.
-      events.push({ time: g.rows[i].time ?? 0, frac: fracsOf(g.rows, i) / nGroups });
+    if (g.rows.length !== g.fracs.length || g.rows.length !== g.notionals.length) {
+      throw new Error(
+        `symbol "${g.symbol}": ${g.rows.length} trades but ${g.fracs.length} returns `
+        + `and ${g.notionals.length} notionals — per-symbol attribution is broken`);
+    }
+    for (let i = 0; i < g.rows.length; i++) {
+      const t = g.rows[i];
+      const own = t.equityBefore > 0 ? t.pnl / t.equityBefore
+        : initialEquity > 0 ? t.pnl / initialEquity : 0;
+      if (g.fracs[i] !== own) {
+        throw new Error(
+          `symbol "${g.symbol}" trade ${i} (time ${g.times[i]}) is carrying return `
+          + `${g.fracs[i]} but its own return is ${own} — a return has been attributed to the `
+          + `wrong trade, so every path statistic computed from it is meaningless`);
+      }
+      if (i > 0 && g.times[i] < g.times[i - 1]) {
+        throw new Error(
+          `symbol "${g.symbol}" trade ${i} (time ${g.times[i]}) precedes its predecessor `
+          + `(time ${g.times[i - 1]}) — the block bootstrap resamples a time-ordered path`);
+      }
     }
   }
-  events.sort((a, b) => a.time - b.time);
-  return events.map((e) => e.frac);
+  return true;
 }
 
-/** Path statistics of one resampled return stream. */
-function pathStats(fracs) {
-  let eq = 1, peak = 1, dd = 0, streak = 0, worst = 0;
-  for (const f of fracs) {
-    eq *= 1 + f;
-    if (eq > peak) peak = eq;
-    if (peak > 0) dd = Math.max(dd, (peak - eq) / peak);
-    streak = f <= 0 ? streak + 1 : 0;
-    if (streak > worst) worst = streak;
-  }
+/**
+ * Whether each symbol's trades are contiguous in the POOLED list.
+ *
+ * Reported, not required. See `groupBySymbol` for why this stopped being
+ * load-bearing.
+ */
+export function symbolOrdering(trades) {
+  const spans = new Map();
+  trades.forEach((t, i) => {
+    const k = t.symbol ?? "_single";
+    const s = spans.get(k) ?? { symbol: k, first: i, last: i, count: 0 };
+    s.last = i; s.count++;
+    spans.set(k, s);
+  });
+  // A symbol's trades are contiguous when they occupy exactly the window
+  // [first, last]; anything else means another symbol's trades sit inside it.
+  const interleaved = [...spans.values()].filter((s) => s.last - s.first + 1 !== s.count);
   return {
-    totalReturn: eq - 1,
-    maxDrawdown: dd,
-    sharpe: sharpeOf(fracs),
-    profitFactor: profitFactorOf(fracs),
+    contiguous: interleaved.length === 0,
+    interleavedSymbols: interleaved.map((s) => s.symbol),
+    note: interleaved.length === 0
+      ? "each symbol's trades are contiguous in the pooled list"
+      : `interleaved in the pooled list; attribution is unaffected because each group carries its own returns (${interleaved.map((s) => s.symbol).join(", ")})`,
+  };
+}
+
+// ------------------------------------------------------- equal-weight book
+
+/**
+ * The portfolio model, stated exactly.
+ *
+ * N symbols become N INDEPENDENT SUB-ACCOUNTS, each starting at 1 unit and
+ * compounding only its own resampled trades. The portfolio is the ARITHMETIC
+ * MEAN of the N equity curves at every point in time:
+ *
+ *     A(t) = (1/N) * sum_s equity_s(t)
+ *
+ * Three things follow, and all three are the point:
+ *
+ *   - Drawdown is measured on A. It is a property of the real equal-weight book,
+ *     not of an arithmetic trick on independent paths.
+ *   - A genuine equal-weight book cannot be deeper than its worst component —
+ *     PROVIDED every sleeve's equity stays non-negative. Under that condition it
+ *     is a theorem of the model, not a hope: for every symbol s and every t,
+ *     equity_s(t) >= peak_s * (1 - DD_s) >= equity_s(t') * (1 - DD_s) at the time
+ *     t' the portfolio peaked, so A(t) >= (1 - max_s DD_s) * A(t') and the
+ *     averaged curve's drawdown is bounded by the worst component's. The
+ *     selftest pins the bound.
+ *     The non-negativity condition is not decorative, and nothing on this path
+ *     enforces it: the equity update multiplies 1 + frac with no floor, so a
+ *     leg that loses more than 100% takes that sleeve's equity NEGATIVE, the
+ *     mean is dragged below the peak by more than 100%, and the bound is
+ *     exceeded. The minimal witness is two legs of [1000, -500, -500] — each
+ *     step is a frac of -1.5, each sleeve ends at -0.5 of its start, the mean
+ *     ends at -0.5, and the reported drawdown is 150%.
+ *     On the real pipeline this cannot arise: simulate() floors equity at
+ *     ruinEquityPct, so a sleeve is already pinned non-negative before it ever
+ *     reaches here, and the bound holds on that path. But equalWeightPath is
+ *     reachable from the EXPORTED entry points — bootstrapMonteCarlo,
+ *     fillPerturbation, slippageSweep, anchoredWalkForward — which all take a
+ *     caller's `trades` and apply no floor of their own. bootstrapMonteCarlo on
+ *     a synthetic pair of sleeves losing 300% of equity reports
+ *     maxDrawdownP50Pct of 2700% against a component mean of 300%. So the bound
+ *     is stated here as the conditional it is: it holds for the simulated book,
+ *     not for arbitrary input to these helpers.
+ *     Clamping is deliberately NOT added here: it would silently rewrite a
+ *     pathological input into a plausible-looking one, and deciding whether to
+ *     fail, clamp, or report is the owner's call, not a comment's.
+ *   - A RESAMPLED book path can still be deeper than the worst sleeve that was
+ *     actually observed, and that is not a contradiction of the bound above.
+ *     The bound relates one book to its own components — max_s DD_s is drawn
+ *     from the same paths that produced A. The observed worst sleeve drawdown
+ *     and the resampled book drawdown are DIFFERENT quantities: the former is
+ *     one observed sample, the latter a drawdown from a block-bootstrap path
+ *     whose sleeves were not individually observed and were free to coincide
+ *     badly. So "deeper than maxDrawdownP50PctComponentsWorst" is a legitimate
+ *     reading of two independent estimates, not evidence the model is wrong.
+ *   - Total return is the MEAN of the per-symbol returns, not their product.
+ *     That is the return of holding equal capital in each symbol without
+ *     rebalancing, which is what an equal-weight book is.
+ *
+ * Why the curves are averaged rather than the per-symbol drawdowns being
+ * averaged: the mean of N drawdowns is not the drawdown of any account, and it
+ * throws away the only thing a drawdown measures — the ORDER of the paths. Two
+ * books with identical per-symbol drawdowns and opposite interleavings produce
+ * the same mean of drawdowns and different real books. Averaging the curves
+ * keeps the ordering, and it is the quantity an investor would actually have
+ * experienced. The two are NOT equal — on the real data quoted below they are
+ * 67.11% and 78.13% — and the report carries both, as
+ * maxDrawdownP50Pct and the diagnostic maxDrawdownP50PctComponentsMean, so the
+ * difference is visible rather than asserted.
+ *
+ * WHAT THIS REPLACED, and in which direction it was wrong. The previous model
+ * divided every trade by N and compounded the merged stream into ONE curve: a
+ * single account of 1000 running N symbols at 1/N of its equity each. That is a
+ * levered account, not a portfolio, and it is wrong in BOTH directions rather
+ * than conservatively wrong, which is the worst property a risk statistic can
+ * have:
+ *
+ *   - where symbols draw down together, the 1/N account pays (1 - x/N)^N for N
+ *     shocks of size x where the real book pays x, which flatters the book;
+ *   - where one symbol's drawdown is offset by another's gain in the same
+ *     window, the 1/N account keeps a single shared equity base, so a gain on
+ *     one symbol cushions a loss on another and it reports a deeper drawdown
+ *     than the book had.
+ *
+ * Measured on the real cached dataset (vol-normalized-breakout, 2583 pooled
+ * trades, 500 block resamples, seed 12345): the old 1/N account reports a median
+ * portfolio drawdown of 70.47% where the equal-weight book reports 67.11%, and
+ * the mean of the per-symbol drawdowns reports 78.13%. The two errors are of
+ * similar size and point in opposite directions, which is why no threshold was
+ * nudged to compensate: the fix is to report a number that means something.
+ *
+ * The old model also violated the rule `evidence.mjs` states outright — "drawdown
+ * and return are PATH properties and must NOT be pooled across symbols" — in
+ * the opposite direction from the unweighted-pooling bug that preceded it.
+ * Drawdowns are never summed, and five full accounts are never compounded into
+ * one.
+ *
+ * Events sharing a timestamp are applied as ONE step. A +50% and a -50% landing
+ * on the same millisecond must not be allowed to register a mid-step portfolio
+ * peak, which would invent a drawdown that no account ever had.
+ */
+function equalWeightPath(legs) {
+  const n = legs.length;
+  const zero = {
+    totalReturn: 0, maxDrawdown: 0, sharpe: null, profitFactor: 0,
+    longestLosingStreak: 0, perSymbol: [],
+  };
+  if (!n) return zero;
+
+  const eq = new Array(n).fill(1);
+  const peak = new Array(n).fill(1);
+  const dd = new Array(n).fill(0);
+  const cur = new Array(n).fill(0);
+  const steps = [];
+  let sumEq = n;                 // sum of the sub-account equities; all start at 1
+  let portEq = 1, portPeak = 1, portDd = 0;
+  let remaining = 0;
+  for (const leg of legs) remaining += leg.events.length;
+
+  while (remaining > 0) {
+    // Earliest next event across all sub-accounts.
+    let s = -1, t = Infinity;
+    for (let k = 0; k < n; k++) {
+      const j = cur[k];
+      if (j < legs[k].events.length) {
+        const tk = legs[k].events[j].time ?? 0;
+        if (tk < t) { t = tk; s = k; }
+      }
+    }
+    if (s < 0) break;
+    const prevEq = portEq;
+    // Every trade settling at this instant, applied before the book is observed.
+    while (s >= 0) {
+      const leg = legs[s];
+      const j = cur[s];
+      if (j >= leg.events.length || (leg.events[j].time ?? 0) !== t) {
+        s = -1; break;
+      }
+      const before = eq[s];
+      eq[s] *= 1 + leg.events[j].frac;
+      sumEq += eq[s] - before;
+      if (eq[s] > peak[s]) peak[s] = eq[s];
+      if (peak[s] > 0) dd[s] = Math.max(dd[s], (peak[s] - eq[s]) / peak[s]);
+      cur[s]++; remaining--;
+      // Advance to the next leg that also has an event at this instant.
+      s = -1;
+      for (let k = 0; k < n; k++) {
+        const q = cur[k];
+        if (q < legs[k].events.length && (legs[k].events[q].time ?? 0) === t) { s = k; break; }
+      }
+    }
+    portEq = sumEq / n;
+    if (portEq > portPeak) portPeak = portEq;
+    if (portPeak > 0) portDd = Math.max(portDd, (portPeak - portEq) / portPeak);
+    // A sub-account at zero makes the book's period return a ratio of zero, and
+    // recording that as 0 would understate the variance. Such steps are dropped
+    // from the Sharpe/profit-factor sample instead of being invented.
+    if (prevEq > 0) steps.push(portEq / prevEq - 1);
+  }
+
+  let streak = 0, worst = 0;
+  for (const f of steps) { streak = f <= 0 ? streak + 1 : 0; if (streak > worst) worst = streak; }
+
+  return {
+    totalReturn: portEq - 1,
+    maxDrawdown: portDd,
+    sharpe: sharpeOf(steps),
+    profitFactor: profitFactorOf(steps),
     longestLosingStreak: worst,
+    perSymbol: legs.map((leg, k) => ({
+      symbol: leg.symbol, totalReturn: eq[k] - 1, maxDrawdown: dd[k],
+    })),
   };
 }
 
@@ -237,11 +495,16 @@ function pathStats(fracs) {
  * Resample trade OUTCOMES and report the distribution of the quantities that
  * actually describe an edge.
  *
- *   pProfitable             P(final equity > starting equity)
- *   pSharpePositive         P(Sharpe > 0)
- *   pProfitFactorAboveOne   P(PF > 1)
+ *   pProfitable             P(portfolio return > 0), where the portfolio return
+ *                           is the MEAN of the per-symbol returns
+ *   pSharpePositive         P(Sharpe > 0) of the averaged portfolio curve
+ *   pProfitFactorAboveOne   P(PF > 1) of the averaged portfolio curve
  *   sharpeP05/P50/P95       the Sharpe distribution
- *   maxDrawdownP50/P95      the drawdown distribution
+ *   maxDrawdownP50/P95      the drawdown distribution, measured on the averaged
+ *                           equity curve — see `equalWeightPath` for the model
+ *
+ *   pProfitableWorstSymbol            DIAGNOSTIC, read by no criterion
+ *   maxDrawdownP50/95PctComponentsMean DIAGNOSTIC, read by no criterion
  *
  * v1's monteCarlo() cannot produce any of these: it reorders a fixed P&L set,
  * and the sum of a fixed P&L set is a constant.
@@ -250,59 +513,45 @@ export function bootstrapMonteCarlo({
   trades, initialEquity = 1000, runs = 1000, seed = 12345,
   method = "block", blockSize = null, ddThresholdPct = 20,
 }) {
-  const { fracs, basis } = fractionalReturns(trades, initialEquity);
+  const { groups, fracs, basis, ordering } = groupTradesBySymbol(trades, initialEquity);
   if (fracs.length < 20) return { runs: 0, trades: fracs.length, note: "too few trades to bootstrap" };
 
-  const groups = groupBySymbol(trades);
   const isPortfolio = groups.length > 1;
   const L = (n) => blockSize ?? Math.ceil(Math.cbrt(n));
   const rnd = rng(seed);
-  const totals = [], sharpes = [], dds = [], pfs = [], streaks = [];
+  const totals = [], sharpes = [], dds = [], pfs = [], streaks = [], compDd = [];
   const perSymbolProfitable = new Map(groups.map((g) => [g.symbol, 0]));
   let breached = 0;
 
-  // Per-group fractional series, so resampling stays inside one symbol.
-  const groupFracs = groups.map((g) => {
-    const start = trades.indexOf(g.rows[0]);
-    return { g, f: fracs.slice(start, start + g.rows.length) };
-  });
-
   for (let r = 0; r < runs; r++) {
-    let bag, perSymbolOk = true;
-    if (isPortfolio) {
-      const events = [];
-      for (const { g, f } of groupFracs) {
-        const n = f.length;
-        const idx = resampleIdx(n, rnd, { method, blockSize: L(n) });
-        let symProfitable = false;
-        let symEq = 1;
-        for (const i of idx) {
-          const fr = f[i] / groups.length;          // equal capital per symbol
-          events.push({ time: g.rows[i].time ?? 0, frac: fr });
-          symEq *= 1 + fr;
-        }
-        symProfitable = symEq > 1;
-        if (!symProfitable) perSymbolOk = false;
-        perSymbolProfitable.set(g.symbol, perSymbolProfitable.get(g.symbol) + (symProfitable ? 1 : 0));
-      }
+    // Resample WITHIN each symbol, so a block never straddles a symbol
+    // boundary, then hand equalWeightPath one leg per sub-account.
+    const legs = groups.map((g) => {
+      const n = g.fracs.length;
+      const idx = resampleIdx(n, rnd, { method, blockSize: L(n) });
+      const events = idx.map((i) => ({ time: g.times[i], frac: g.fracs[i] }));
       events.sort((a, b) => a.time - b.time);
-      bag = events.map((e) => e.frac);
-    } else {
-      bag = resampleIdx(fracs.length, rnd, { method, blockSize: L(fracs.length) })
-        .map((i) => fracs[i]);
-    }
+      return { symbol: g.symbol, events };
+    });
 
-    const s = pathStats(bag);
+    const s = equalWeightPath(legs);
     totals.push(s.totalReturn);
     dds.push(s.maxDrawdown);
     streaks.push(s.longestLosingStreak);
     if (s.sharpe != null) sharpes.push(s.sharpe);
     if (Number.isFinite(s.profitFactor)) pfs.push(s.profitFactor);
     if (s.maxDrawdown * 100 >= ddThresholdPct) breached++;
+    // Diagnostic only: the mean of the per-symbol drawdowns, which is NOT the
+    // drawdown of the averaged curve. Reported so the difference is visible.
+    compDd.push(s.perSymbol.reduce((a, x) => a + x.maxDrawdown, 0) / s.perSymbol.length);
+    for (const ps of s.perSymbol) {
+      perSymbolProfitable.set(ps.symbol, perSymbolProfitable.get(ps.symbol) + (ps.totalReturn > 0 ? 1 : 0));
+    }
   }
 
   const qs = quantiles(totals, [0.05, 0.5, 0.95]);
   const dq = quantiles(dds, [0.5, 0.95]);
+  const cq = quantiles(compDd, [0.5, 0.95]);
   const sq = quantiles(sharpes, [0.05, 0.5, 0.95]);
   const worstSymbol = [...perSymbolProfitable.values()].reduce((a, b) => Math.min(a, b), Infinity);
   const worstSymbolPct = Number(((worstSymbol / runs) * 100).toFixed(2));
@@ -311,20 +560,38 @@ export function bootstrapMonteCarlo({
     method, runs, trades: fracs.length, blockSize: method === "block" ? L(fracs.length) : null,
     fractionalBasis: basis,
     seed,
-    scope: isPortfolio ? `equal-weight portfolio of ${groups.length} symbols (1/${groups.length} per symbol)` : "single account",
+    scope: isPortfolio
+      ? `equal-weight portfolio of ${groups.length} symbols: ${groups.length} independent sub-accounts `
+        + `of 1 unit, portfolio equity = arithmetic mean of the ${groups.length} curves at every `
+        + `timestamp; returns averaged, drawdown taken on the averaged curve, never compounded or summed`
+      : "single account",
+    portfolioModel: "equal-weight additive (arithmetic mean of per-symbol equity curves)",
     symbols: groups.map((g) => g.symbol),
+    symbolOrdering: ordering,
     pProfitable: Number(((totals.filter((x) => x > 0).length / runs) * 100).toFixed(2)),
+    // DIAGNOSTIC ONLY. No criterion in gate-v2.mjs reads this field; it exists
+    // to show how often the book's WORST component made money, which is a
+    // different question from whether the book did. Nothing may start reading
+    // it as a gate input without a protocol change.
     pProfitableWorstSymbol: isPortfolio ? worstSymbolPct : null,
+    diagnosticOnly: ["pProfitableWorstSymbol", "maxDrawdownP50PctComponentsMean", "maxDrawdownP95PctComponentsMean"],
     pSharpePositive: sharpes.length ? Number(((sharpes.filter((x) => x > 0).length / sharpes.length) * 100).toFixed(2)) : null,
     pProfitFactorAboveOne: pfs.length ? Number(((pfs.filter((x) => x > 1).length / pfs.length) * 100).toFixed(2)) : null,
     sharpeP05: sq.p5, sharpeP50: sq.p50, sharpeP95: sq.p95,
     totalReturnP05: qs.p5, totalReturnP50: qs.p50, totalReturnP95: qs.p95,
     maxDrawdownP50Pct: Number((dq.p50 * 100).toFixed(2)),
     maxDrawdownP95Pct: Number((dq.p95 * 100).toFixed(2)),
+    // Diagnostic: the same resamples scored as the MEAN of the per-symbol
+    // drawdowns instead of the drawdown of the averaged curve. Not the same
+    // quantity, and the one the criteria read is the one above.
+    maxDrawdownP50PctComponentsMean: Number((cq.p50 * 100).toFixed(2)),
+    maxDrawdownP95PctComponentsMean: Number((cq.p95 * 100).toFixed(2)),
     pBreach: Number(((breached / runs) * 100).toFixed(2)),
     ddThresholdPct,
     longestLosingStreakP95: quantiles(streaks, [0.95]).p95,
-    note: "OUTCOME resampling with replacement, equal-weighted across symbols; v1's order-shuffle cannot move expectancy, PF or Sharpe",
+    note: "OUTCOME resampling with replacement inside each symbol; the portfolio is the equal-weight "
+      + "mean of per-symbol equity curves, so its drawdown is never deeper than its worst component "
+      + "and never compounds across symbols; v1's order-shuffle cannot move expectancy, PF or Sharpe",
   };
 }
 
@@ -446,46 +713,43 @@ export function deflatedSharpe({ sharpe, trades, nTrials, fracs = null }) {
  * onward the two RNG streams sit at different positions and draw different
  * resamples. Asserting the multi-run case would be asserting something false.
  *
- * Like the bootstrap, this is an equal-weight portfolio across symbols: 1/N per
- * symbol, resampled within each symbol, events replayed in time order.
+ * Like the bootstrap, this is the same equal-weight portfolio: N independent
+ * sub-accounts of one unit, resampled within each symbol, and the book is the
+ * ARITHMETIC MEAN of the N equity curves. The extra fill cost needs no scaling:
+ * `notional * bps / initialEquity` is already the cost as a fraction of the
+ * leg's own capital, and averaging the legs scales it to the book exactly once.
+ * Dividing it by N here as well would have understated execution cost fivefold.
  */
 export function fillPerturbation({
   trades, initialEquity = 1000, runs = 500, seed = 12345,
   sizeJitterPct = 0.1, extraSlippageBps = 5, ddThresholdPct = 20, method = "block",
 }) {
-  const { fracs, basis } = fractionalReturns(trades, initialEquity);
+  const { groups, fracs, basis, ordering } = groupTradesBySymbol(trades, initialEquity);
   if (fracs.length < 20) return { runs: 0, note: "too few trades to perturb" };
 
-  const groups = groupBySymbol(trades);
   const isPortfolio = groups.length > 1;
   const L = (n) => Math.ceil(Math.cbrt(n));
   const rnd = rng(seed);
-
-  // notional per trade, aligned to the same grouping
-  const notionalOf = new Map(trades.map((t, i) => [i, Math.abs((t.entry ?? 0) * (t.qty ?? 0))]));
-  const startOf = new Map();
-  { let acc = 0; for (const g of groups) { startOf.set(g.symbol, acc); acc += g.rows.length; } }
 
   const totals = [], dds = [];
   let breached = 0;
 
   for (let r = 0; r < runs; r++) {
-    const events = [];
-    for (const g of groups) {
-      const n = g.rows.length;
-      const base = startOf.get(g.symbol);
+    const legs = groups.map((g) => {
+      const n = g.fracs.length;
       const idx = resampleIdx(n, rnd, { method, blockSize: L(n) });
-      for (const i of idx) {
-        const gi = base + i;
+      const events = idx.map((i) => {
         const jitter = 1 + gauss(rnd) * sizeJitterPct;
-        const notional = notionalOf.get(gi) ?? 0;
+        const notional = g.notionals[i];
         const extraCost = notional > 0 && initialEquity > 0
           ? (notional * (rnd() * extraSlippageBps) / 10000) / initialEquity : 0;
-        events.push({ time: g.rows[i].time ?? 0, frac: (fracs[gi] * Math.max(0, jitter) - extraCost) / groups.length });
-      }
-    }
-    events.sort((a, b) => a.time - b.time);
-    const s = pathStats(events.map((e) => e.frac));
+        return { time: g.times[i], frac: g.fracs[i] * Math.max(0, jitter) - extraCost };
+      });
+      events.sort((a, b) => a.time - b.time);
+      return { symbol: g.symbol, events };
+    });
+
+    const s = equalWeightPath(legs);
     totals.push(s.totalReturn);
     dds.push(s.maxDrawdown);
     if (s.maxDrawdown * 100 >= ddThresholdPct) breached++;
@@ -494,13 +758,20 @@ export function fillPerturbation({
   const dq = quantiles(dds, [0.5, 0.95]);
   return {
     runs, trades: fracs.length, seed, fractionalBasis: basis,
-    scope: isPortfolio ? `equal-weight portfolio of ${groups.length} symbols` : "single account",
+    scope: isPortfolio
+      ? `equal-weight portfolio of ${groups.length} symbols: ${groups.length} independent sub-accounts `
+        + `of 1 unit, portfolio equity = arithmetic mean of the ${groups.length} curves at every timestamp`
+      : "single account",
+    portfolioModel: "equal-weight additive (arithmetic mean of per-symbol equity curves)",
+    symbolOrdering: ordering,
     sizeJitterPct, extraSlippageBps, ddThresholdPct,
     pBreach: Number(((breached / runs) * 100).toFixed(2)),
     maxDrawdownP50Pct: Number((dq.p50 * 100).toFixed(2)),
     maxDrawdownP95Pct: Number((dq.p95 * 100).toFixed(2)),
     pProfitable: Number(((totals.filter((x) => x > 0).length / runs) * 100).toFixed(2)),
-    note: "bootstrap with random size error and extra adverse slippage per fill, equal-weighted across symbols",
+    note: "bootstrap with random size error and extra adverse slippage per fill; the portfolio is the "
+      + "equal-weight mean of per-symbol equity curves, so its drawdown is the book's own and never "
+      + "compounds across symbols",
   };
 }
 
@@ -607,14 +878,20 @@ function gridVariants(grid) {
  * right for the average of the sample.
  *
  *   efficiencyRatio  mean OOS fold Sharpe / mean IS fold Sharpe
- *   foldCoverage     % of folds that produced ANY out-of-sample trades. Gated,
- *                     because a strategy that goes silent out of sample must not
- *                     score 100% consistency across the folds that did fire.
+ *   foldCoverage     % of folds that produced ANY out-of-sample trades. Gated at
+ *                     100, because a strategy that goes silent out of sample must
+ *                     not score 100% consistency across the folds that did fire.
  *   stationarityT    paired Student t on the per-fold (OOS - IS) Sharpe gap.
  *                   Sign convention: MORE NEGATIVE IS WORSE. Stationary means
  *                   the differences are noise around zero; a strategy whose
  *                   parameters only fit the whole sample gives a systematically
  *                   negative difference, so t goes large and negative.
+ *
+ * A SILENT FOLD IS A FAILED FOLD, NOT A MISSING ONE. Every average below is
+ * taken over ALL folds; a fold with no out-of-sample trades contributes a
+ * Sharpe of 0 and a non-profitable result. Excluding it would let a strategy
+ * that stopped trading keep a perfect consistency score, which is the exact
+ * failure an anchored walk-forward exists to catch.
  */
 export function anchoredWalkForward({
   bars, signal, cfg = {}, grid = {}, folds = 4, warmup = 250, objective = "sharpe",
@@ -663,16 +940,24 @@ export function anchoredWalkForward({
       testBars: testBars.length,
       variantsTested: variants.length,
       chosen: best.params,
-      is: { sharpe: best.metrics.sharpe, profitFactor: best.metrics.profitFactor, trades: best.trades, totalReturnPct: best.metrics.totalReturnPct },
-      oos: { sharpe: mt.sharpe, profitFactor: mt.profitFactor, trades: mt.trades, totalReturnPct: mt.totalReturnPct, ruined: rt.ruined },
+      is: { sharpe: best.metrics.sharpe, profitFactor: best.metrics.profitFactor, trades: best.trades, totalReturnPct: best.metrics.totalReturnPct ?? 0 },
+      // `metrics()` omits totalReturnPct entirely when a window produced no
+      // trades. A fold that could not trade returned exactly 0%, so it is
+      // recorded as 0 rather than left undefined and dropped from a JSON record.
+      oos: { sharpe: mt.sharpe, profitFactor: mt.profitFactor, trades: mt.trades, totalReturnPct: mt.totalReturnPct ?? 0, ruined: rt.ruined, silent: mt.trades === 0 },
     });
   }
 
   if (!perFold.length) return { folds: 0, perFold: [], note: "no fold had enough train and test bars" };
 
-  const isS = perFold.map((x) => x.is.sharpe).filter((x) => x != null);
-  const oosS = perFold.map((x) => x.oos.sharpe).filter((x) => x != null);
-  const diffs = perFold.filter((x) => x.is.sharpe != null && x.oos.sharpe != null).map((x) => x.oos.sharpe - x.is.sharpe);
+  // EVERY fold counts. A fold in which the strategy produced no out-of-sample
+  // trades earned exactly 0% out of sample, so it contributes a Sharpe of 0 and
+  // a non-profitable result — not a gap in the sample. Dropping such folds is
+  // what let a strategy that stopped trading entirely still look perfect; see
+  // the block below.
+  const isS = perFold.map((x) => x.is.sharpe ?? 0);
+  const oosS = perFold.map((x) => x.oos.sharpe ?? 0);
+  const diffs = perFold.map((x, i) => oosS[i] - isS[i]);
   const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
   const sd = (a) => {
     if (a.length < 2) return null;
@@ -683,27 +968,36 @@ export function anchoredWalkForward({
   const t = dMean != null && dSd != null && dSd > 0 ? dMean / (dSd / Math.sqrt(diffs.length)) : null;
 
   const traded = perFold.filter((x) => x.oos.trades > 0);
-  const profitable = traded.filter((x) => x.oos.totalReturnPct > 0);
+  // A silent fold is a FAILED fold, so the denominator is every fold, not just
+  // the ones that fired.
+  const profitable = perFold.filter((x) => x.oos.trades > 0 && x.oos.totalReturnPct > 0);
   const isMean = mean(isS);
   const oosMean = mean(oosS);
-  const effOk = isS.length && oosS.length && isMean > 0;
+  const effOk = isMean != null && oosMean != null && isMean > 0;
 
   // SILENT FOLDS ARE A FAILURE, NOT A FILTER-OUT.
   //
-  // `traded` and `oosS` both exclude folds that produced no trades, so every
-  // statistic below is computed over the folds that happened to fire. A signal
-  // that trades for the first 1900 bars and is then silent for the last 1100
-  // (~37% of the sample) scored consistency 100%, meanOosSharpe 2.72 and an
-  // efficiency ratio of 1.31, and cleared all three walk-forward criteria with
-  // perfect marks — while being unable to trade for more than a third of the
-  // out-of-sample period. That is precisely the "only right for the average of
-  // the sample" failure the anchored walk-forward exists to detect, and it is
-  // what a walk-forward is supposed to expose.
+  // This used to read `perFold.filter((x) => x.oos.trades > 0)` and then divide
+  // by `traded.length`, with `oosS` filtered by `!= null` in the same way, so
+  // every statistic below was computed over the folds that happened to fire. A
+  // signal that trades for the first 1900 bars and is then silent for the last
+  // 1100 (~37% of the sample) scored consistency 100%, meanOosSharpe 2.72 and
+  // an efficiency ratio of 1.31, and cleared all three walk-forward criteria
+  // with perfect marks — while being unable to trade for more than a third of
+  // the out-of-sample period. That is precisely the "only right for the average
+  // of the sample" failure the anchored walk-forward exists to detect, and it
+  // is what a walk-forward is supposed to expose.
   //
-  // So the coverage ratio is reported, and `anchoredWalkForward` reports it as
-  // its own field for the gate to read. It is a separate field precisely so that
-  // no downstream consumer can accidentally read the filtered statistics
-  // without also seeing how much was filtered out.
+  // A partially silent strategy is just as bad and still exploitable: with four
+  // folds and a 75% coverage bar, ONE dead fold passes. A fold window the
+  // strategy has no opinion about is not evidence it worked, so the coverage
+  // bar is 100 (protocol.v2.json `MIN_WF_COVERAGE`) and, independently,
+  //   - consistency divides by EVERY fold, so a silent fold is counted as a
+  //     failed fold rather than removed from the sample;
+  //   - meanOosSharpe, worstOosSharpe and the efficiency ratio average over
+  //     EVERY fold with silent folds contributing 0, which can only lower them;
+  //   - the stationarity t-test pairs every fold, so a silent fold enters as a
+  //     genuine OOS-minus-IS shortfall instead of vanishing.
   const coverage = perFold.length ? Number(((traded.length / perFold.length) * 100).toFixed(1)) : null;
 
   return {
@@ -722,10 +1016,22 @@ export function anchoredWalkForward({
     foldsWithTrades: traded.length,
     foldsSilent: perFold.length - traded.length,
     foldCoverage: coverage,
+    // Stated in the artefact, because the bar being 100 is a protocol decision
+    // and a reader of one run should not have to know it.
+    foldCoverageBarPct: 100,
     foldsProfitable: profitable.length,
-    consistency: traded.length ? Number(((profitable.length / traded.length) * 100).toFixed(1)) : null,
-    meanIsSharpe: isS.length ? Number(isMean.toFixed(3)) : null,
-    meanOosSharpe: oosS.length ? Number(oosMean.toFixed(3)) : null,
+    // Denominator is EVERY fold. A silent fold is a failed fold.
+    consistencyDenominator: perFold.length,
+    consistency: perFold.length ? Number(((profitable.length / perFold.length) * 100).toFixed(1)) : null,
+    consistencyNote: perFold.length === traded.length
+      ? `profitable folds / all ${perFold.length} folds; no fold was silent`
+      : `${profitable.length}/${perFold.length} folds profitable out of sample; `
+        + `${perFold.length - traded.length} silent fold(s) counted as failures, not excluded`,
+    // Silent folds contribute a 0 here, not a missing value.
+    silentFoldPolicy: "a fold with no out-of-sample trades earns 0% and Sharpe 0; it is never dropped "
+      + "from the consistency, mean OOS Sharpe, efficiency or stationarity statistics",
+    meanIsSharpe: isMean != null ? Number(isMean.toFixed(3)) : null,
+    meanOosSharpe: oosMean != null ? Number(oosMean.toFixed(3)) : null,
     worstOosSharpe: oosS.length ? Number(Math.min(...oosS).toFixed(3)) : null,
     efficiencyRatio: effOk ? Number((oosMean / isMean).toFixed(3)) : null,
     // An unexplained null reads as a bug rather than as a verdict. Retention
@@ -738,7 +1044,7 @@ export function anchoredWalkForward({
     // Welch's: the differences are pairs from the same fold, which is a paired
     // design. Sign convention: MORE NEGATIVE IS WORSE.
     stationarityT: t == null ? null : Number(t.toFixed(3)),
-    stationarityNote: "more negative = worse: OOS reliably below IS across folds (paired t)",
+    stationarityNote: "more negative = worse: OOS reliably below IS across folds (paired t, one pair per fold)",
     totalOosTrades: perFold.reduce((a, x) => a + x.oos.trades, 0),
   };
 }
@@ -1128,15 +1434,140 @@ if (process.argv[1] && process.argv[1].endsWith("robustness.mjs")) {
       `worst symbol profitable in ${mixed.pProfitableWorstSymbol}% of draws`);
     check("the worst-symbol probability is absent for a single account",
       bootstrapMonteCarlo({ trades: one, runs: 50, seed: 11 }).pProfitableWorstSymbol === null);
+    check("the worst-symbol probability is labelled diagnostic, not a gate input",
+      Array.isArray(port.diagnosticOnly) && port.diagnosticOnly.includes("pProfitableWorstSymbol"),
+      `diagnosticOnly: ${port.diagnosticOnly.join(", ")}`);
+  }
+
+  // ---- REGRESSION: the book is the MEAN OF THE CURVES, not a 1/N-capped account
+  //
+  // The model this file used to compute divided every trade by N and compounded
+  // the merged stream into one curve. That is one account running N symbols at
+  // 1/N of its equity each, and it is not a portfolio. It is a different
+  // quantity in BOTH directions, which is why nothing here is a threshold
+  // tweak: it lets a gain on one symbol cushion a loss on another inside a
+  // single shared equity base the real book does not have, and it applies N
+  // simultaneous shocks of size x as (1 - x/N)^N where the real book takes x.
+  {
+    // Five symbols, four trades each, every trade of a symbol the same shock.
+    // iid resampling is used because it permutes the same 20 trades, so every
+    // draw is the same path and the expected values below are exact:
+    //   leg_s    = (1 + x_s)^4
+    //   book     = mean of the legs
+    //   1/N acct = product over all 20 events of (1 + x_s/N)
+    const t0 = 1767225600;
+    const legs = (m) => {
+      const out = [];
+      for (const [sym, x] of Object.entries(m)) {
+        for (let i = 0; i < 4; i++) {
+          out.push({ symbol: sym, time: t0 + i * 5 * 900, pnl: 1000 * x, equityBefore: 1000, entry: 100, qty: 1 });
+        }
+      }
+      return out.sort((a, b) => a.time - b.time);
+    };
+    const allDown = { S0: -0.5, S1: -0.5, S2: -0.5, S3: -0.5, S4: -0.5 };
+    const book = bootstrapMonteCarlo({ trades: legs(allDown), runs: 200, seed: 5, method: "iid" });
+    const equalWeightFinal = 0.5 ** 4;                            // mean of five identical legs
+    const oneNthFinal = Object.values(allDown).reduce((eq, x) => eq * (1 + x / 5), 1) ** 4;
+    check("the book's curve is the MEAN of the per-symbol curves, exactly",
+      Math.abs(book.maxDrawdownP50Pct - (1 - equalWeightFinal) * 100) < 0.5,
+      `reported ${book.maxDrawdownP50Pct}% vs mean-of-legs ${((1 - equalWeightFinal) * 100).toFixed(2)}%`);
+    check("a 1/N-capped account is a DIFFERENT book, not a flatter version of this one",
+      Math.abs(oneNthFinal - equalWeightFinal) > 0.01,
+      `1/N account ends at ${oneNthFinal.toFixed(4)}x, the equal-weight book at ${equalWeightFinal.toFixed(4)}x`);
+
+    // The other direction, and the property the old docstring claimed while the
+    // old code did not have it: one symbol in freefall against four winners.
+    const mixedShock = { S0: -0.5, S1: 0.1, S2: 0.1, S3: 0.1, S4: 0.1 };
+    const mixedBook = bootstrapMonteCarlo({ trades: legs(mixedShock), runs: 200, seed: 5, method: "iid" });
+    const worstLegDd = (1 - 0.5 ** 4) * 100;
+    check("the book is never deeper than its worst component",
+      mixedBook.maxDrawdownP50Pct <= worstLegDd + 0.5,
+      `book ${mixedBook.maxDrawdownP50Pct}% vs worst component ${worstLegDd.toFixed(2)}%`);
+    check("the drawdown of the averaged curve is NOT the mean of the components' drawdowns",
+      mixedBook.maxDrawdownP50Pct !== mixedBook.maxDrawdownP50PctComponentsMean,
+      `averaged curve ${mixedBook.maxDrawdownP50Pct}% vs mean of components ${mixedBook.maxDrawdownP50PctComponentsMean}%`);
+    check("the report names the model it actually used",
+      book.portfolioModel === "equal-weight additive (arithmetic mean of per-symbol equity curves)"
+      && /arithmetic mean/.test(book.scope), book.scope);
+  }
+
+  // ---- REGRESSION: interleaved per-symbol trades must be attributed correctly
+  //
+  // The old code found a symbol's slice of the pooled return array with
+  // `trades.indexOf(g.rows[0])` and added `g.rows.length`. That is only right
+  // while each symbol's trades are contiguous in the pooled list, which held
+  // only because `evidence.mjs` offsets every symbol's bar range. On the real
+  // cached data, interleaving the same trades moved 2578 of 2583 returns to the
+  // wrong symbol and the median portfolio drawdown from 70.47% to 80.71%, with
+  // no error raised.
+  {
+    const perSymbol = (sym, n, dr) => {
+      const out = []; let eq = 1000;
+      for (let i = 0; i < n; i++) {
+        out.push({ symbol: sym, time: 1767225600 + (i * 5) * 900, pnl: eq * dr, equityBefore: eq, entry: 100, qty: 1 });
+        eq += out[i].pnl;
+      }
+      return out;
+    };
+    const contig = [
+      ...perSymbol("A", 200, 0.01), ...perSymbol("B", 200, 0.02),
+      ...perSymbol("C", 200, -0.01), ...perSymbol("D", 200, 0.005),
+      ...perSymbol("E", 200, -0.02),
+    ];
+    // The same trades, round-robin in time: no symbol is contiguous.
+    const inter = [];
+    for (let i = 0; i < 200; i++) {
+      for (const sym of ["A", "B", "C", "D", "E"]) {
+        inter.push(contig.find((t) => t.symbol === sym && t.time === 1767225600 + (i * 5) * 900));
+      }
+    }
+
+    const c = bootstrapMonteCarlo({ trades: contig, runs: 300, seed: 21 });
+    const x = bootstrapMonteCarlo({ trades: inter, runs: 300, seed: 21 });
+    check("interleaved trades are NOT contiguous in the pooled list",
+      symbolOrdering(contig).contiguous === true && symbolOrdering(inter).contiguous === false,
+      `contiguous report: ${symbolOrdering(inter).note}`);
+    check("interleaved trades do not raise, and are attributed correctly",
+      x.pProfitable === c.pProfitable && x.maxDrawdownP50Pct === c.maxDrawdownP50Pct
+      && x.sharpeP50 === c.sharpeP50,
+      `interleaved ${x.pProfitable}%/${x.maxDrawdownP50Pct}%/${x.sharpeP50} vs `
+      + `contiguous ${c.pProfitable}%/${c.maxDrawdownP50Pct}%/${c.sharpeP50}`);
+    check("the interleaved run still names all five symbols and the same scope",
+      x.symbols.length === 5 && x.scope === c.scope, x.scope);
+
+    // The old slicing, reproduced, to show what the new code no longer does:
+    // for each symbol, take pooled.slice(indexOf(first), +rows.length) and count
+    // the positions where that slice is not this symbol's own return.
+    const { fracs: pooled } = fractionalReturns(inter, 1000);
+    const g = groupTradesBySymbol(inter, 1000);
+    let misattributed = 0, total = 0;
+    for (const grp of g.groups) {
+      const start = inter.indexOf(grp.rows[0]);
+      const slice = pooled.slice(start, start + grp.rows.length);
+      total += slice.length;
+      for (let k = 0; k < slice.length; k++) if (slice[k] !== grp.fracs[k]) misattributed++;
+    }
+    check("the old index-arithmetic slice really did misattribute (this test would have caught it)",
+      misattributed > total * 0.5,
+      `${misattributed} of ${total} returns would have been attributed to the wrong symbol`);
+
+    // And the invariant itself is loud rather than silent.
+    g.groups[0].fracs[0] = g.groups[1].fracs[0];
+    let msg = "";
+    try { assertGroups(g.groups, inter, 1000); } catch (e) { msg = e.message; }
+    check("a mis-attributed return raises instead of producing a plausible number",
+      /attributed to the\s+wrong trade/.test(msg.replace(/\s+/g, " ")), msg.slice(0, 110));
   }
 
   // ---- REGRESSION: a silent out-of-sample fold must not be filtered out
   //
-  // consistency/meanOosSharpe/efficiencyRatio are all computed over folds that
-  // produced trades. A signal that trades for the first 1900 bars and is then
-  // silent for the last 1100 used to report consistency 100%, meanOosSharpe
-  // 2.72 and efficiency 1.31 — clearing every walk-forward criterion with perfect
-  // marks while being unable to trade for more than a third of the period.
+  // A fold in which the strategy produced no out-of-sample trades used to be
+  // removed from the sample, so consistency divided by the folds that fired.
+  // A signal that trades for the first 1900 bars and is then silent for the last
+  // 1100 reported consistency 100%, meanOosSharpe 2.72 and efficiency 1.31 —
+  // clearing every walk-forward criterion with perfect marks while being unable
+  // to trade for more than a third of the period.
   {
     const bars = mkBars(4000, 0.3);
     const cutoff = bars[1900].time;
@@ -1154,6 +1585,70 @@ if (process.argv[1] && process.argv[1].endsWith("robustness.mjs")) {
     const tradesThroughout = anchoredWalkForward({ bars, signal: alwaysLong, folds: 4, warmup: 100 });
     check("a strategy that trades throughout has 100% fold coverage",
       tradesThroughout.foldCoverage === 100, `${tradesThroughout.foldCoverage}%`);
+  }
+
+  // ---- REGRESSION: ONE dead fold must not be survivable (the coverage hole)
+  //
+  // A 75% coverage bar with four folds lets a single completely dead fold
+  // through, so a signal that trades for the first 80% of the sample and is
+  // silent for the last 20% — a full fold window — used to pass with nothing
+  // failed. Both defences are pinned here: the coverage bar is 100, and the
+  // consistency denominator is every fold rather than the folds that fired.
+  {
+    const bars = mkBars(4000, 0.3);
+    const lastFoldStart = bars[Math.floor((4000 - 100) / 5) * 4].time;
+    const diesInLastFold = ({ bar }) => (bar.time < lastFoldStart ? { side: "buy" } : null);
+    const dead = anchoredWalkForward({ bars, signal: diesInLastFold, folds: 4, warmup: 100 });
+    const silentFolds = dead.perFold.filter((x) => x.oos.trades === 0).length;
+
+    check("the one-dead-fold case really is one dead fold", silentFolds === 1,
+      `${silentFolds} silent, coverage ${dead.foldCoverage}%`);
+    check("a single dead fold is below the 100% coverage bar",
+      dead.foldCoverage === 75 && dead.foldCoverage < 100, `coverage ${dead.foldCoverage}%`);
+    check("the consistency denominator is EVERY fold, not the folds that fired",
+      dead.consistencyDenominator === 4 && dead.consistency < 100,
+      `${dead.foldsProfitable}/${dead.consistencyDenominator} = ${dead.consistency}%`);
+    // A dead fold contributes a Sharpe of 0, not a missing value, so the mean
+    // over the folds that fired is diluted.
+    const liveSharpes = dead.perFold.filter((x) => x.oos.trades > 0).map((x) => x.oos.sharpe);
+    const liveMean = liveSharpes.reduce((a, b) => a + b, 0) / liveSharpes.length;
+    check("meanOosSharpe counts the dead fold as 0 rather than dropping it",
+      Math.abs(dead.meanOosSharpe - liveMean * (liveSharpes.length / 4)) < 0.001,
+      `reported ${dead.meanOosSharpe} vs mean-over-folds-that-fired ${liveMean.toFixed(3)}`);
+    check("the efficiency ratio is computed over every fold too",
+      Math.abs(dead.efficiencyRatio - (liveMean * liveSharpes.length / 4) / dead.meanIsSharpe) < 0.001,
+      `efficiency ${dead.efficiencyRatio} with meanIsSharpe ${dead.meanIsSharpe}`);
+    check("the run says out loud that silent folds count as failures",
+      /counted as failures/.test(dead.consistencyNote), dead.consistencyNote);
+    check("every fold is flagged silent or not, in the per-fold record",
+      dead.perFold.every((x) => x.oos.silent === (x.oos.trades === 0)),
+      dead.perFold.map((x) => `${x.fold}:${x.oos.trades}`).join(" "));
+
+    // And the whole point: the v2 gate reads these numbers, so it fails.
+    const { evaluateRobustness, CRITERIA_V2 } = await import("./gate-v2.mjs");
+    const verdict = evaluateRobustness({
+      wf: dead,
+      mc: { pProfitable: 100, pSharpePositive: 100 },
+      dsr: { ok: true, dsr: 0.999 },
+      fill: { pBreach: 0 },
+    });
+    const failed = verdict.checks.filter((c) => !c.ok).map((c) => c.name);
+    check("the v2 gate FAILS a strategy that died for one whole fold",
+      verdict.passed === false && failed.some((f) => /coverage/.test(f)),
+      `failed: ${failed.join("; ") || "nothing"}`);
+    check("the coverage bar in the protocol is 100, not 75", CRITERIA_V2.MIN_WF_COVERAGE === 100,
+      `MIN_WF_COVERAGE=${CRITERIA_V2.MIN_WF_COVERAGE}`);
+    // The same strategy that was silent for the last 20% must not be able to
+    // buy a pass by being silent over a whole quarter of the sample.
+    const aLiveFold = anchoredWalkForward({ bars, signal: alwaysLong, folds: 4, warmup: 100 });
+    const stillGood = evaluateRobustness({
+      wf: aLiveFold,
+      mc: { pProfitable: 100, pSharpePositive: 100 },
+      dsr: { ok: true, dsr: 0.999 }, fill: { pBreach: 0 },
+    });
+    check("a strategy with an opinion in every fold is unaffected by the stricter bar",
+      aLiveFold.foldCoverage === 100 && aLiveFold.consistencyDenominator === 4,
+      `coverage ${aLiveFold.foldCoverage}%, consistency ${aLiveFold.consistency}%, gate v2 ${stillGood.passed ? "pass" : `fail (${stillGood.failedNames.join("; ")})`}`);
   }
 
   // ---- REGRESSION: a strategy with no grid cannot re-optimise, and says so

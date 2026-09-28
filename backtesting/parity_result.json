@@ -1,0 +1,50 @@
+{
+  "entries": {
+    "vectorbt_entries": 0,
+    "lean_entries": 147,
+    "match": false,
+    "difference": 147
+  },
+  "exits": {
+    "vectorbt_exits": 0,
+    "lean_exits": 147,
+    "match": false,
+    "difference": 147
+  },
+  "timestamps": {
+    "vectorbt_has_timestamps": false,
+    "lean_has_timestamps": true,
+    "both_present": false,
+    "note": "Exact timestamp parity requires parsing LEAN stdout trade list."
+  },
+  "trade_count": {
+    "vectorbt_trades": 1,
+    "lean_trades": 147,
+    "match": false,
+    "difference": 146
+  },
+  "pnl_direction": {
+    "vectorbt_pnl_direction": "positive",
+    "lean_pnl_direction": "positive",
+    "match": true,
+    "vectorbt_net": 1,
+    "lean_net": 147
+  },
+  "vectorbt_candidates": 1,
+  "lean_result_available": false,
+  "lean_trades": 147,
+  "lean_sharpe": 1.35,
+  "lean_max_drawdown": -0.13,
+  "lean_profit_factor": 1.35,
+  "vectorbt_top_profit_factor": 1.42,
+  "vectorbt_top_sharpe": 1.15,
+  "notes": [
+    "Small differences expected due to fill/slippage models.",
+    "Large differences (>20% trade count, opposite PnL direction) indicate assumption divergence."
+  ],
+  "divergence_flags": [
+    "Trade count mismatch: VectorBT=1 LEAN=147",
+    "Large trade count divergence detected (>10 or >10%)"
+  ],
+  "status": "REVIEW"
+}

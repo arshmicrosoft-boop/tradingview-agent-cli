@@ -26,6 +26,32 @@ import { PROTOCOL } from "./protocol.mjs";
 // Criteria are LOADED from protocol.v1.json, not defined here. The protocol is
 // hashed, and the hash is recorded on every run, so a threshold cannot be
 // relaxed after seeing results without it showing up in the run record.
+//
+// WHAT THE HASH ACTUALLY COVERS — read this before trusting a run record.
+//
+// The hash is computed over the protocol JSON only (`protocol.mjs:53`,
+// `sha256(canonicalize(protocolJson))`). It is tamper-evidence for
+// THRESHOLDS: if a MIN_* value, a cost, a risk parameter, a symbol list or a
+// Monte Carlo seed changes, the hash changes, and `verify.mjs:155` fails
+// because the latest run no longer cites the current one.
+//
+// It is NOT tamper-evidence for COMPUTATION. The pipeline code is not in the
+// hash and not in the verify check, so a change to how a metric is MEASURED
+// leaves the hash untouched and `npm run verify` stays green. This is not
+// theoretical: the archive contains two strategies — `sideways-liquidity-
+// reversal` and `_control_random` — with two records each on the SAME hash
+// `1e42a7d31d851b9b` and DIFFERENT failed lists, because the walk-forward
+// criterion was rewired between the two runs.
+//
+// So `protocol.v1.json`'s claim that "you should not be able to move a
+// threshold after seeing results without it being visible" is TRUE, and
+// narrower than it reads. A metric changing under a fixed hash is a documented
+// limitation of the current scheme, not a bug in it. Fixing it would mean
+// hashing the pipeline (or the metric definitions) and versioning the
+// protocol — a deliberate design change that is out of scope here. Until then,
+// treat two records on one hash as "same thresholds, possibly different
+// arithmetic", and compare the recorded criterion VALUES
+// (`failed_detail` in registry.mjs), not just the pass/fail names.
 export const CRITERIA = PROTOCOL.criteria;
 
 /**
@@ -108,6 +134,110 @@ export function regimeSummary(trades, labels, barTimes) {
   return by;
 }
 
+// ------------------------------------------------- THE equal-weight book
+//
+// This is the ONLY portfolio definition any gate criterion is allowed to use,
+// and it is deliberately the boring one: N sleeves, 1/N of the capital in
+// each, returns ADDED, nothing rebalanced, no compounding across sleeves.
+// Return and drawdown are read off the SAME averaged curve, so both halves of a
+// calmar are always the same book.
+//
+// THE BUG THIS REPLACES, precisely. evidence.mjs used to report
+//
+//     agg.totalReturnPct  = (Π_s (1 + r_s) - 1) * 100    <- a 5x-GEARED book:
+//                                                            the product of five
+//                                                            FULL-account returns
+//     agg.maxDrawdownPct = max_s DD_s                    <- a 1x, SINGLE-sleeve
+//                                                            drawdown
+//
+// and `stratCalmar` below divided the first by the second. The numerator was
+// the return of a five-times-geared portfolio and the denominator was a
+// one-times drawdown. The units did not match; the ratio was inflated by
+// roughly the leverage, in the strategy's favour, on every single verdict in
+// BOTH v1 and v2 (gate-v2.mjs passes `evidence.agg` straight into this gate).
+//
+// Falsified on synthetic evidence: five symbols each returning +20% with a 15%
+// drawdown, against a hold benchmark of calmar 2.0.
+//
+//     geared numerator    return 148.83  calmar 9.922   PASS
+//     equal-weight book   return  20.00  calmar 1.333   FAIL
+//
+// Same book, opposite verdict, decided purely by which return definition was
+// used. It stayed hidden only because all eleven strategies in the repo lose
+// so much money that even the inflated numerator is still negative. On real
+// data the geared book reported -99.77% for `_control_alwayslong` where the
+// equal-weight book returns -55.22%, and -99.36% for `sma-cross` where the
+// equal-weight book returns -1.32%.
+//
+// The repo's own rule already said so, at the top of evidence.mjs, and the code
+// was not obeying it: "Drawdown and return are PATH properties and must NOT be
+// pooled across symbols." Pooling a return across symbols by compounding is
+// the same error in a different costume.
+
+/**
+ * Average N sleeves pointwise into one book.
+ *
+ * `seriesList` is index-aligned: `seriesList[k][i]` is sleeve k's value at
+ * index i, or `null` where sleeve k has no observation. A `null` is forward-
+ * filled from that sleeve's own last known value, and back-filled from its own
+ * first, because that is what actually happens to a sleeve: an account that
+ * was ruined stops reporting but its capital does not come back, and the bars
+ * before a sleeve's first point are flat by construction. Dropping a dead
+ * sleeve instead of carrying it would delete its losses and shrink the book.
+ */
+export function equalWeightPath(seriesList) {
+  const nSleeves = seriesList.length;
+  if (!nSleeves) return [];
+  const len = Math.max(...seriesList.map((s) => s.length));
+  const filled = seriesList.map((s) => {
+    const out = new Array(len);
+    let last = null;
+    for (let i = 0; i < len; i++) {
+      const v = i < s.length ? s[i] : null;
+      if (v != null) last = v;
+      out[i] = last;
+    }
+    const first = out.find((v) => v != null);
+    if (first == null) return new Array(len).fill(0);
+    for (let i = 0; i < len; i++) if (out[i] == null) out[i] = first;
+    return out;
+  });
+  const book = new Array(len).fill(0);
+  for (let i = 0; i < len; i++) {
+    let sum = 0;
+    for (let k = 0; k < nSleeves; k++) sum += filled[k][i];
+    book[i] = sum / nSleeves;
+  }
+  return book;
+}
+
+/** Return, max drawdown and calmar of ONE path, both measured on that path. */
+export function pathStats(series, base) {
+  const b = base ?? series[0];
+  if (!series.length || !(b > 0)) {
+    return { totalReturnPct: 0, maxDrawdownPct: 0, calmar: null, base: b ?? null };
+  }
+  let peak = b, dd = 0;
+  for (const v of series) {
+    if (v > peak) peak = v;
+    if (peak > 0) dd = Math.max(dd, (peak - v) / peak);
+  }
+  const ret = series[series.length - 1] / b - 1;
+  return {
+    totalReturnPct: Number((ret * 100).toFixed(2)),
+    maxDrawdownPct: Number((dd * 100).toFixed(2)),
+    calmar: dd > 0 ? Number((ret / dd).toFixed(3)) : null,
+    base: b,
+    final: series[series.length - 1],
+  };
+}
+
+/** The whole portfolio statistic, in one call, from index-aligned sleeves. */
+export function equalWeightBook(seriesList, { base = null } = {}) {
+  const book = equalWeightPath(seriesList);
+  return { ...pathStats(book, base ?? book[0] ?? null), nSymbols: seriesList.length, points: book.length };
+}
+
 /**
  * Benchmark buy-and-hold ON THE SAME BARS, per regime.
  *
@@ -121,47 +251,129 @@ export function regimeSummary(trades, labels, barTimes) {
  * `calmar` (return / max drawdown) is the risk-adjusted figure used, because it
  * is meaningful when Sharpe is computed per-trade and so is not comparable
  * across different trade counts.
+ *
+ * THE BASIS IS AN EQUAL-WEIGHT BOOK OVER ALL N SYMBOLS, and only that is true
+ * on both sides. The strategy side is `evaluateGate`'s `pooledPnl /
+ * (initialEquity * N)`: the POOLED `regimes[r].pnl` divided by the equity of
+ * the whole book, so it is a per-symbol-equity return with a symbol that did
+ * not trade in the regime contributing 0. The benchmark side is a COMPOUNDED
+ * per-symbol path (buy and hold compounds; it is not a sum of one-bar returns),
+ * which evidence.mjs averages pointwise over ALL N symbols — a symbol with no
+ * bars in that regime is padded with a flat 1.0x path of the right length so
+ * the divisor is N and not "the number of symbols that happened to have the
+ * regime". Both sides are then equal-weight over the same N-symbol population
+ * and in the same equity units, which is what makes the `>` meaningful.
+ *
+ * What is deliberately NOT claimed: that the two numbers are computed by the
+ * same arithmetic. The strategy side is a mean of per-symbol MONEY returns; the
+ * benchmark side is a mean of per-symbol COMPOUNDED paths. They agree as
+ * equal-weight averages over the same population, not as identical functions.
+ * The earlier comment in this slot asserted "same arithmetic on both sides"
+ * and that a symbol absent from a regime contributed a flat-1.0 sleeve; both
+ * were false, and the second was false structurally — `benchmarkPerRegime`
+ * only emits keys for regimes present in `labels`, so before the N-padding
+ * above no sleeve was pushed at all for a missing symbol.
+ *
+ * The version before that reported, per regime, the BAR-WEIGHTED MEAN of the
+ * per-contiguous-leg returns — a per-leg average, not a cumulative return over
+ * the regime. With a recurring regime (bull/bear/sideways alternate dozens of
+ * times across 400 days) that number is far smaller than what the sleeve
+ * actually earned in total, so the strategy was being compared against a
+ * benchmark it was almost always going to beat. `legMeanReturnPct` and
+ * `worstLegDrawdownPct` are kept below as diagnostics; they are NOT what any
+ * criterion reads.
  */
 export function benchmarkPerRegime({ bars, regimes, initialEquity }) {
   const dir = regimes.directional || regimes;      // index-aligned to `bars`
-  // A regime RECURS. Treating every occurrence of a label as one continuous
-  // leg makes first->last span the quiet stretches in between, which inflates
-  // the return of every regime to roughly the whole-period return. So each
-  // CONTIGUOUS run is its own leg, and legs are aggregated per regime after.
-  const runs = [];
-  let cur = null;
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const r = dir[i];                              // positional, NOT by timestamp
-    if (!r) { cur = null; continue; }               // warmup bar breaks the run
-    if (!cur || cur.regime !== r) {
-      cur = { regime: r, first: b.close, last: b.close, peak: b.close, dd: 0, bars: 0 };
-      runs.push(cur);
-    }
-    cur.last = b.close;
-    if (b.close > cur.peak) cur.peak = b.close;
-    if (cur.peak > 0) cur.dd = Math.max(cur.dd, (cur.peak - b.close) / cur.peak);
-    cur.bars++;
+  const n = bars.length;
+  const labels = new Set(dir.filter((x) => x != null));
+
+  // COMPOUNDED equity path per regime, in units of 1.0, index-aligned. Buy and
+  // hold COMPOUNDS: holding through n one-bar returns MULTIPLIES them, it does
+  // not add them. Summing one-bar returns instead understates the benchmark by
+  // roughly Σr²/2 per step, and that gap is unbounded over a long trending
+  // regime. Measured on the cached 400d/15m 5-symbol data, the bull benchmark is
+  // +0.88% as a sum of one-bar returns and +630.63% compounded. A gate
+  // comparing a strategy against the +0.88% version was comparing it against a
+  // number no holder could have earned, which is a false PASS.
+  //
+  // THE ACCUMULATOR MUST SURVIVE A REGIME GAP, and this is the subtle part.
+  // `path[l] = new Array(n).fill(1)` alone is not enough: `path[r][i-1]` is 1.0
+  // at the first bar of every new leg, so a per-index `path[r][i-1] * (1 + ret)`
+  // silently RESETS to 1.0x at each gap. Bull/bear/sideways alternate dozens of
+  // times across 400 days, so that is dozens of resets, and the result is
+  // leg-mean behaviour wearing a compound's clothes — measured at 0.89%, i.e.
+  // the bug unchanged. Hence `run[l]`: one running multiple per regime that is
+  // only ever advanced, never cleared, and every bar of every regime carries
+  // the current value forward. A gap is FLAT (the path holds), which is what
+  // "flat outside the regime" has to mean once the arithmetic is multiplicative.
+  // Flat-and-holding is also what makes the LAST element of the array the
+  // regime's total return: `pathStats` reads `series[series.length-1]`, and a
+  // path that snapped back to 1.0 on out-of-regime bars would report ~0 for any
+  // regime the sample did not end in.
+  const path = {}, run = {}, barsIn = {}, legs = {}, legRet = {}, legBars = {}, legDd = {};
+  for (const l of labels) {
+    path[l] = new Array(n).fill(1);
+    run[l] = 1;
+    barsIn[l] = 0; legs[l] = 0; legRet[l] = 0; legBars[l] = 0; legDd[l] = 0;
   }
 
-  const agg = {};
-  for (const l of runs) {
-    const ret = l.first > 0 ? l.last / l.first - 1 : 0;
-    const a = agg[l.regime] || (agg[l.regime] = { retSum: 0, wSum: 0, dd: 0, runs: 0, bars: 0 });
-    a.retSum += ret * l.bars;                       // bar-weighted
-    a.wSum += l.bars;
-    a.dd = Math.max(a.dd, l.dd);                    // worst leg
-    a.runs++;
-    a.bars += l.bars;
+  // A regime RECURS. Each CONTIGUOUS run is one leg, tracked for the
+  // diagnostics below; the REPORTED return compounds across all of them.
+  let cur = null;
+  for (let i = 1; i < n; i++) {
+    const r = dir[i];                              // positional, NOT by timestamp
+    const prevClose = bars[i - 1].close, close = bars[i].close;
+    const ret = prevClose > 0 ? close / prevClose - 1 : 0;
+
+    // Every regime's path holds its value across this bar unless this bar is
+    // in that regime. This is the "flat outside the regime" line.
+    for (const l of labels) path[l][i] = run[l];
+
+    if (r) {
+      if (!cur || cur.regime !== r) {
+        if (cur) {
+          const lr = cur.first > 0 ? cur.last / cur.first - 1 : 0;
+          legRet[cur.regime] += lr; legBars[cur.regime] += cur.bars; legs[cur.regime]++;
+          legDd[cur.regime] = Math.max(legDd[cur.regime] ?? 0, cur.dd);
+        }
+        cur = { regime: r, first: bars[i - 1].close, last: close, peak: close, dd: 0, bars: 0 };
+      }
+      cur.last = close;
+      if (close > cur.peak) cur.peak = close;
+      if (cur.peak > 0) cur.dd = Math.max(cur.dd, (cur.peak - close) / cur.peak);
+      cur.bars++;
+      if (path[r]) { run[r] *= 1 + ret; path[r][i] = run[r]; barsIn[r]++; }
+    } else {
+      cur = null;                                  // warmup/other bar breaks the run
+    }
   }
+  if (cur) {
+    const lr = cur.first > 0 ? cur.last / cur.first - 1 : 0;
+    legRet[cur.regime] += lr; legBars[cur.regime] += cur.bars; legs[cur.regime]++;
+    legDd[cur.regime] = Math.max(legDd[cur.regime] ?? 0, cur.dd);
+  }
+
   const out = {};
-  for (const [k, a] of Object.entries(agg)) {
-    const ret = a.wSum > 0 ? a.retSum / a.wSum : 0;
-    out[k] = {
-      returnPct: Number((ret * 100).toFixed(2)),
-      maxDrawdownPct: Number((a.dd * 100).toFixed(2)),
-      calmar: a.dd > 0 ? Number((ret / a.dd).toFixed(3)) : null,
-      runs: a.runs, bars: a.bars,
+  for (const l of labels) {
+    const st = pathStats(path[l], 1);
+    out[l] = {
+      // This symbol's own COMPOUNDED return over every bar the regime
+      // occupied, in percent. evidence.mjs averages these paths over the whole
+      // book and OVERWRITES the three fields above on the averaged curve; this
+      // per-symbol value is the sleeve's own, kept for auditing.
+      returnPct: st.totalReturnPct,
+      // This symbol's own path drawdown. The AUTHORITATIVE portfolio drawdown
+      // can only be the drawdown of the AVERAGED path, and that is computed by
+      // evidence.mjs once every symbol's path is in; a book is never deeper
+      // than its worst component, so this is an upper bound on it.
+      maxDrawdownPct: st.maxDrawdownPct,
+      calmar: st.calmar,
+      bars: barsIn[l], runs: legs[l],
+      // Diagnostics, read by no criterion.
+      legMeanReturnPct: legBars[l] > 0 ? Number(((legRet[l] / legBars[l]) * 100).toFixed(2)) : 0,
+      worstLegDrawdownPct: Number(((legDd[l] ?? 0) * 100).toFixed(2)),
+      path: path[l],
     };
   }
   return out;
@@ -180,7 +392,7 @@ export function benchmark({ bars, initialEquity }) {
     totalReturnPct: Number((ret * 100).toFixed(2)),
     maxDrawdownPct: Number((dd * 100).toFixed(2)),
     calmar: dd > 0 ? Number((ret / dd).toFixed(3)) : null,
-    note: "buy-and-hold on the same bars, no costs, no stop",
+    note: "SINGLE-symbol buy-and-hold on the given bars, no costs, no stop — NOT the equal-weight book. evidence.mjs builds the book with equalWeightBook instead; this helper is not on the gate path.",
   };
 }
 
@@ -219,15 +431,24 @@ export function evaluateGate({
   // explicitly; the fallback is the protocol's own starting equity, because a
   // silently-invented denominator here would make the criterion unfalsifiable.
   //
-  // `regimes[reg].pnl` is POOLED across all symbols — evidence.mjs accumulates
-  // every symbol's regime P&L into one number — while the benchmark on the other
-  // side of the comparison, `benchByRegime[reg].returnPct`, is the MEAN of the
-  // per-symbol regime returns. So the two sides are not in the same units unless
-  // the strategy side is divided by the symbol count too. Skipping that made the
-  // strategy's return N times too large: on sma-cross, a bull stretch where the
-  // strategy earned 39.7% and holding returned 4.9% was being compared as
-  // 198.6% against 4.9%, and would have passed a comparison it should have lost
-  // by a factor of five.
+  // THE POPULATION MUST MATCH ON BOTH SIDES, and this is a computation fix, not
+  // a threshold change. `pooledEquity = eqBase * N` is right for the strategy
+  // side: `regimes[reg].pnl` is POOLED, and every symbol that did not trade in
+  // the regime contributes 0 to the numerator, so dividing by all N makes it an
+  // equal-weight mean over the whole book. The benchmark side is
+  // `benchByRegime[reg].returnPct` — the mean of the N per-symbol COMPOUNDED
+  // buy-and-hold paths. evidence.mjs pads a symbol that has no bars in a regime
+  // with a flat 1.0x path so its divisor is N too, not "the number of symbols
+  // where the regime was observed". Same N, same equity units, both equal
+  // weight; the `> hold` test below is a comparison of two equal-weight books.
+  //
+  // It was NOT the same N before. `benchmarkPerRegime` only returns keys for
+  // regimes present in its `labels` set, and evidence.mjs only pushed a sleeve
+  // for regimes that appeared, so a symbol missing a regime contributed nothing
+  // and the benchmark's divisor was that symbol's absence — invisible on the
+  // current 5/5 data, and wrong for any symbol set that is not perfectly
+  // balanced. An earlier version of this comment described the padding as
+  // something `benchmarkPerRegime` already did; it did not, and does not.
   const eqBase = initialEquity ?? 1000;
   const nSymbols = Math.max(1, symbolCount ?? 1);
   const pooledEquity = eqBase * nSymbols;
@@ -288,6 +509,25 @@ export function evaluateGate({
   }
 
   // --- risk-adjusted, regime-matched benchmark
+  //
+  // BOTH SIDES OF THIS DIVISION ARE THE SAME BOOK.
+  //
+  // `metrics` is `evidence.agg`, and both numbers below are read off the ONE
+  // equal-weight book curve that evidence.mjs builds by averaging the N symbol
+  // equity curves pointwise (see `equalWeightBook` in this file):
+  //
+  //   metrics.totalReturnPct    the book curve's final/initial - 1, which is
+  //                             exactly the MEAN of the N per-symbol returns
+  //   metrics.maxDrawdownPct   the book curve's own max drawdown, NOT the
+  //                             worst single symbol
+  //
+  // They used to be a compounded 5x-geared numerator over a 1x single-symbol
+  // denominator. Same falsifying book, opposite verdict: five symbols at +20%
+  // with 15% drawdown scored 9.922 before and 1.333 now, against a hold
+  // benchmark of 2.0.
+  //
+  // `bench.calmar` is built the same way in evidence.mjs from the averaged
+  // buy-and-hold curve, so "> hold" is a comparison of like with like.
   const stratCalmar = metrics.maxDrawdownPct > 0
     ? metrics.totalReturnPct / metrics.maxDrawdownPct : null;
   const benchCalmar = bench?.calmar ?? null;
@@ -310,12 +550,17 @@ export function evaluateGate({
    *
    * The fix compares like with like. `regimes[reg].pnl` is a sum of money and
    * `bh.returnPct` is a percentage, so they cannot be subtracted directly. What
-   * CAN be compared is the regime's risk-adjusted return: the strategy's return
-   * on the equity it was exposed to, against the benchmark's calmar for the
-   * same stretch. When the benchmark has no drawdown to divide by (a regime that
-   * only ever went up), there is nothing to beat on a risk-adjusted basis, so
-   * the bar degrades to "the strategy must be profitable there" — which is
-   * still a real test, and is now labelled as what it is.
+   * CAN be compared is the regime's return on the equity the book was exposed
+   * to: the strategy's equal-weight regime return, against the benchmark's
+   * equal-weight regime return for the same stretch. Both sides are
+   * equal-weight over the SAME N symbols (see the `pooledEquity` comment
+   * above), so this is a `>` between two numbers of the same kind and the same
+   * population — the benchmark side being a COMPOUNDED path, because buy and
+   * hold compounds, not a sum of one-bar returns. When the benchmark has
+   * no drawdown in this regime (an equal-weight book that never fell below its
+   * running peak), there is no risk-adjusted figure to compare, so the bar
+   * degrades to "the strategy must be profitable there" — which is still a
+   * real test, and is now labelled as what it is.
    */
   if (benchByRegime) {
     for (const [reg, r] of Object.entries(regimes)) {
@@ -323,8 +568,10 @@ export function evaluateGate({
       const bh = benchByRegime[reg];
       if (!bh) continue;
       if (bh.calmar == null) {
-        // No benchmark drawdown in this regime: nothing to compare risk-adjusted,
-        // so require profitability and SAY that is the weaker bar being applied.
+        // The equal-weight hold book had no drawdown in this regime: nothing to
+        // compare risk-adjusted, so require profitability and SAY that is the
+        // weaker bar being applied. (`calmar` is null exactly when the averaged
+        // book path never closed below its running peak.)
         checks.push([`beats hold in ${reg} (no hold drawdown, profit required)`,
           `pnl ${r.pnl.toFixed(2)}`, "> 0", r.pnl > 0]);
         continue;
@@ -412,6 +659,148 @@ if (process.argv[1] && process.argv[1].endsWith("gate.mjs")) {
   check("benchmark reports calmar", bb[Object.keys(bb)[0]].calmar !== undefined);
   const bbC = benchmarkPerRegime({ bars: choppy, regimes: rC });
   check("a mixed series yields multiple benchmark regimes", Object.keys(bbC).length >= 2, Object.keys(bbC).join(","));
+
+  // ==================================================================
+  // REGRESSION: the regime benchmark COMPOUNDS, and it is this that the
+  // `beats hold in <reg>` bar is measured against.
+  //
+  // The bar used to be a running SUM of one-bar returns,
+  //     path[r][i] = path[r][i-1] + ret
+  // which is not a return at all: buy and hold over n bars multiplies the
+  // one-bar returns, it does not add them. On the cached 400d/15m 5-symbol
+  // data that made the bull bar +0.88% where the compounded figure is
+  // +630.63%, so the criterion was comparing a strategy against a number no
+  // holder could earn — 6 of 11 archived strategies passed `beats hold in bull`
+  // on it. Compounding is a computation fix; no threshold moved.
+  {
+    // +1%/bar for 500 bars, all one regime (long enough to clear the 200-bar
+    // trend warmup). Sum says +500%; compound says 1.01^500 - 1 = 148.2% less
+    // a little — they differ by a factor of three, which is the defect in one
+    // line. The labels are supplied directly so the fixture tests the
+    // arithmetic and not the labeller.
+    const ramp = mk(500, (i) => 100 * Math.pow(1.01, i));
+    const rRamp = { directional: new Array(500).fill("bull") };
+    const bRamp = benchmarkPerRegime({ bars: ramp, regimes: rRamp });
+    const got = bRamp.bull;
+    const compounded = (Math.pow(1.01, 499) - 1) * 100;
+    const summed = 499;
+    check("a regime benchmark COMPOUNDS its one-bar returns, it does not sum them",
+      Math.abs(got.returnPct - compounded) < 0.5 && Math.abs(got.returnPct - summed) > 50,
+      `reported ${got.returnPct}% vs compounded ${compounded.toFixed(2)}% vs summed ${summed}%`);
+
+    // A RECURRING regime must compound across the gap between legs. A per-index
+    // `path[r][i-1] * (1 + ret)` resets to 1.0x at every leg boundary, which
+    // reproduces the bug (measured 0.89% on the real data instead of 630.63%),
+    // so the path has to hold flat across a gap rather than restart.
+    //
+    // Each leg contributes 100 compounding steps, not 99: the first in-regime
+    // bar carries the return from the bar before it, which is how the real
+    // regime path works. (`runs` is not asserted — a leg terminated by a
+    // WARMUP/null bar is not counted by the diagnostics, which is pre-existing
+    // behaviour of the leg counters and not what this check is about.)
+    const L = 500;
+    const legs = Array.from({ length: L }, (_, i) => {
+      const c = 100 * Math.pow(1.01, i);
+      return { time: 1767225600 + i * 900, open: c, high: c, low: c, close: c, volume: 100 };
+    });
+    // label bull for [200,300) and [400,500): two legs with a real gap between
+    const dirTwo = new Array(L).fill(null);
+    for (let i = 200; i < 300; i++) dirTwo[i] = "bull";
+    for (let i = 400; i < 500; i++) dirTwo[i] = "bull";
+    const bLegs = benchmarkPerRegime({ bars: legs, regimes: { directional: dirTwo } });
+    const bullLegs = bLegs.bull;
+    const bothLegs = (Math.pow(1.01, 200) - 1) * 100;      // 100 + 100 steps
+    const onlyOneLeg = (Math.pow(1.01, 100) - 1) * 100;     // what a reset would report
+    check("a RECURRING regime compounds across the gap between legs, not once per leg",
+      bullLegs != null && Math.abs(bullLegs.returnPct - bothLegs) < 0.5
+        && Math.abs(bullLegs.returnPct - onlyOneLeg) > 100,
+      `reported ${bullLegs?.returnPct}% vs both legs ${bothLegs.toFixed(2)}% vs one leg only ${onlyOneLeg.toFixed(2)}%`);
+
+    // The path must be flat-and-holding outside the regime, which is also what
+    // makes its LAST element the regime's total return. `pathStats` reads
+    // series[series.length-1]; a path that snapped back to 1.0 on out-of-regime
+    // bars would report ~0 for any regime the sample did not end in.
+    const pathTail = bullLegs?.path ?? [];
+    check("the regime path HOLDS flat across a gap instead of snapping back to 1.0x",
+      pathTail.length > 0 && Math.abs(pathTail[pathTail.length - 1] - (1 + bullLegs.returnPct / 100)) < 0.01,
+      `last=${pathTail[pathTail.length - 1]?.toFixed(4)} (1 + returnPct/100 = ${(1 + bullLegs.returnPct / 100).toFixed(4)})`);
+  }
+
+  // ==================================================================
+  // REGRESSION: the equal-weight book, and the calmar wrong-PASS it closes.
+  //
+  // The falsifying case, run end to end: five identical sleeves, each +20%
+  // with a 15% drawdown, against a hold benchmark of calmar 2.0. Both
+  // definitions below describe THE SAME BOOK. Only the return definition
+  // differs, and the verdict flips on it.
+  //
+  //     geared:    (1.2^5 - 1) = 148.83%  /  15%  =  9.922  -> PASS
+  //     equal-wt:  mean of five 20%s   =  20.00%  /  15%  =  1.333  -> FAIL
+  //
+  // The geared number is the return of a 5x-leveraged portfolio divided by a
+  // 1x drawdown. It passed because the numbers had nothing to do with each
+  // other. It only failed to change any recorded verdict because every
+  // strategy in the repo is a catastrophic loser.
+  {
+    const sleeves = Array.from({ length: 5 }, () => {
+      const s = [];
+      for (let i = 0; i <= 20; i++) s.push(1000);
+      s[10] = 850;                                   // 1000 -> 850 is a 15% dip
+      for (let i = 11; i <= 20; i++) s[i] = 900 + (i - 10) * 30;   // recover to 1200
+      s[20] = 1200;                                  // +20% total
+      return s;
+    });
+    const bookSt = equalWeightBook(sleeves, { base: 1000 });
+    check("the equal-weight book return is the MEAN of the sleeve returns, not their product",
+      bookSt.totalReturnPct === 20, `${bookSt.totalReturnPct}% (geared would be ${Number(((Math.pow(1.2, 5) - 1) * 100).toFixed(2))}%)`);
+    check("the equal-weight book drawdown is the AVERAGED curve's, not the worst sleeve's",
+      Math.abs(bookSt.maxDrawdownPct - 15) < 0.01, `${bookSt.maxDrawdownPct}%`);
+    check("numerator and denominator come off the SAME curve (calmar = 20/15)",
+      Math.abs(bookSt.calmar - 20 / 15) < 0.001, `calmar ${bookSt.calmar}`);
+
+    // The gate is handed exactly what evidence.mjs now builds.
+    const bookMetrics = { trades: 900, profitFactor: 1.8, sharpe: 1.6, maxDrawdownPct: bookSt.maxDrawdownPct, totalReturnPct: bookSt.totalReturnPct };
+    const base = {
+      metrics: bookMetrics,
+      mc: { probabilityOfBreachingThreshold: 6 }, wf: { consistency: 80 },
+      regimes: { bull: { trades: 300, pnl: 3000 }, bear: { trades: 300, pnl: 2000 }, sideways: { trades: 300, pnl: 2500 } },
+      volRegimes: { high: { trades: 400, pnl: 40 }, low: { trades: 500, pnl: 37 } },
+      bench: { calmar: 2.0 },
+      benchByRegime: { bull: { calmar: 1.0, returnPct: 50 }, bear: { calmar: 1.0, returnPct: -5 }, sideways: { calmar: 0.5, returnPct: 2 } },
+      symbolCount: 5,
+      holdout: { ok: true, test: { trades: 300, sharpe: 1.1 }, testRuin: false, degradation: 0.7, sensitivity: 0.6 },
+      stress: { survivalRate: 0.7, maxSurvivableFeeBps: 30, maxSurvivableSlippageBps: 15 },
+      initialEquity: 1000,
+    };
+    const gBook = evaluateGate(base);
+    check("five sleeves at +20% / 15% DD against hold calmar 2.0 now FAIL on calmar",
+      gBook.failedNames.some((f) => /calmar/i.test(f)),
+      `calmar ${(bookMetrics.totalReturnPct / bookMetrics.maxDrawdownPct).toFixed(3)} vs hold 2.000`);
+
+    // And the geared construction, which is what used to run, PASSES. If this
+    // ever stops being true the probe above has stopped testing anything.
+    const geared = { ...base, metrics: { ...base.metrics, totalReturnPct: Number(((Math.pow(1.2, 5) - 1) * 100).toFixed(2)) } };
+    const gGeared = evaluateGate(geared);
+    check("the 5x-geared construction of the SAME book PASSES (this is the wrong-PASS)",
+      !gGeared.failedNames.some((f) => /calmar/i.test(f)),
+      `calmar ${(geared.metrics.totalReturnPct / geared.metrics.maxDrawdownPct).toFixed(3)} vs hold 2.000`);
+
+    // A book is never deeper than its worst component — the property that makes
+    // the equal-weight drawdown the honest one.
+    const lopsided = [
+      [1000, 1000, 1000, 1000, 1000, 500, 1000],
+      [1000, 1000, 1000, 1000, 1000, 1000, 1200],
+    ];
+    check("a book is never deeper than its worst sleeve",
+      equalWeightBook(lopsided, { base: 1000 }).maxDrawdownPct <= 50,
+      `book ${equalWeightBook(lopsided, { base: 1000 }).maxDrawdownPct}% vs worst sleeve 50%`);
+
+    // A sleeve that stops reporting (a ruined account) keeps its capital in the
+    // book rather than being deleted from the average.
+    const carried = equalWeightBook([[1000, 1000, 400, 400, 400, 400], [1000, 1000, 1000, 1000, 1000, 1200]], { base: 1000 });
+    check("a ruined sleeve's capital stays in the book (forward-filled, not dropped)",
+      carried.final === 800, `book ends at ${carried.final} (a dropped sleeve would say 1100)`);
+  }
 
   // --- gate verdicts
   // --- baseline "good" evidence, including the new holdout/stress results

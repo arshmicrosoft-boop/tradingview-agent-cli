@@ -260,38 +260,154 @@ export function metrics({ trades, equityCurve, initialEquity, barSeconds = 86400
 
 // ------------------------------------------------------------ monte carlo
 
-/** Shuffle the ORDER of a fixed set of trade outcomes. */
+/**
+ * THE PORTFOLIO MODEL, stated exactly. One definition, three files.
+ *
+ * N symbols become N INDEPENDENT SUB-ACCOUNTS, each of `initialEquity`, each
+ * trading only its own trades. The book is the ARITHMETIC MEAN of the N
+ * sleeves' equity at every point in time:
+ *
+ *     A(t) = (1/N) * sum_s equity_s(t)
+ *
+ *   - Portfolio RETURN is the MEAN of the N per-symbol returns, additive. It is
+ *     never the product of the returns, which is a 5x-geared book.
+ *   - Portfolio max DRAWDOWN is the drawdown OF A(t). Never the worst single
+ *     symbol, and never the sum of the per-symbol drawdowns — the mean of N
+ *     drawdowns is not the drawdown of any account and throws away the only
+ *     thing a drawdown measures, which is the ORDER of the paths.
+ *   - A `null` in a sleeve is forward-filled from that sleeve's OWN last value.
+ *     A ruined account stops trading and stops reporting, but its capital does
+ *     not come back; dropping the sleeve instead would delete its losses and
+ *     shrink the book.
+ *
+ * The same model is implemented in `robustness.mjs` (`equalWeightPath`, on
+ * resampled outcomes) and in `gate.mjs` (`equalWeightPath`/`equalWeightBook`, on
+ * aligned curves). Those are the two implementations this one is pinned
+ * against by the "equal-weight book" selftests below, so the three cannot
+ * silently drift apart.
+ *
+ * WHAT THIS REPLACED, and in which direction it was wrong. This function
+ * replayed the POOLED five-symbol trade set against a SINGLE `initialEquity`,
+ * so its equity path was the return of five FULL accounts compounded into one
+ * 1000-unit account: a 5x-GEARED book, exactly the error `evidence.mjs` names
+ * in its own header ("drawdown and return are PATH properties and must NOT be
+ * pooled across symbols"). It was wrong in the flattering direction, which is
+ * the worst direction for a risk statistic:
+ *
+ *   - the geared path is five times as volatile as the real book, so its
+ *     drawdown was inflated roughly fivefold;
+ *   - worse, it is not a drawdown at all. On the real cached dataset
+ *     (vol-normalized-breakout, 2583 pooled trades, seed 12345) the geared
+ *     replay ended at an equity of -500.64 — a NEGATIVE account balance, which
+ *     no real book can report — and its `(peak - eq) / peak` therefore reported
+ *     a median drawdown of 168.41% and a worst of 363.73%, percentages no
+ *     account can lose. Under the non-negative-equity condition — every sleeve's
+ *     path stays at or above zero, which `simulate`'s ruin rule enforces — this
+ *     equal-weight book cannot exceed 100% by construction, and reports a
+ *     median of 54.58% and a worst of 92.63% on the
+ *     same trades. That 54.58% is what `evidence.agg.maxDrawdownPct` reports
+ *     (54.55%), which is the point: the `P(dd breach)` criterion and the
+ *     `max drawdown %` criterion now describe the same book.
+ *
+ * The 100% bound is CONDITIONAL and the condition is not decorative. A sleeve
+ * that trades through zero has an equity curve that crosses the denominator of
+ * `(peak - eq) / peak`, where the ratio stops being a fraction of a loss and
+ * becomes larger than 1: `equalWeightPath([[1000, -500, -500], ...])` reports
+ * 150%. The `peak > 0` guard in the scan below stops the scan running past a
+ * non-positive peak, but it cannot un-report a book whose peak was already
+ * above zero and whose trough went below it. So: the bound holds for any book
+ * that never goes negative, and does not hold for one that does. The old text
+ * claimed it unconditionally, which is false.
+ *
+ * So the honest number here is SMALLER than the old one, and the old one was
+ * not a conservative error to be compensated for with a threshold. It was a
+ * number with no referent. No threshold was moved.
+ *
+ * SINGLE-SYMBOL CALLERS ARE BIT-IDENTICAL. A raw `simulate()` trade carries no
+ * `symbol`, so it forms one sleeve of N=1, and then A(t) is that one account:
+ * one Fisher-Yates over one bag off the same RNG stream in the same order, one
+ * equity path, no forward-filling (a sleeve is defined at every step of its own
+ * axis), and the same peak/drawdown scan. The selftest pins it, and it is
+ * asserted on the real cached data too.
+ */
 export function monteCarlo({ trades, initialEquity, runs = 1000, seed = 12345, ddThresholdPct = 20 }) {
   if (trades.length < 5) return { runs: 0, note: "too few trades" };
+  const sleeves = groupSleeves(trades);
+  const N = sleeves.length;
   let s = seed >>> 0;
   const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
-  const pnls = trades.map((t) => t.pnl);
+  const legsOf = sleeves.map((g) => ({ pnls: g.rows.map((t) => t.pnl), times: g.times }));
   // The sum of a fixed P&L set is order-invariant, so "final equity
   // percentiles" would be a constant and carry no information. What ordering
   // changes is the PATH: drawdown depth, drawdown breach probability, and the
   // longest losing run. Those are the risk quantities, so those are reported.
-  const finalEquity = initialEquity + pnls.reduce((a, b) => a + b, 0);
+  //
+  // The book's FINAL equity is the mean of the sleeves' final equities:
+  //   A(T) = (1/N) * sum_s (initialEquity + sum_{t in s} pnl)
+  //        = initialEquity + (1/N) * sum_{all t} pnl
+  // which for N=1 is exactly `initialEquity + sum(pnl)`, the pre-portfolio
+  // value. It is also algebraically the MEAN of the N per-symbol returns over
+  // `initialEquity`, so it is the additive portfolio return by construction.
+  const pooledPnl = legsOf.reduce((a, l) => a + l.pnls.reduce((x, y) => x + y, 0), 0);
+  const finalEquity = initialEquity + pooledPnl / N;
 
-  const maxDds = [], streaks = [];
+  const maxDds = [], streaks = [], compDds = [];
   let breached = 0;
   for (let r = 0; r < runs; r++) {
-    const bag = pnls.slice();
-    for (let i = bag.length - 1; i > 0; i--) {          // Fisher-Yates, seeded
-      const j = Math.floor(rnd() * (i + 1));
-      [bag[i], bag[j]] = [bag[j], bag[i]];
+    // 1. Shuffle WITHIN each sleeve, independently, so a trade never migrates
+    //    between symbols and the book is always N real sub-accounts. Swapping an
+    //    index array rather than the P&L array makes the single-sleeve case the
+    //    same swap sequence, in the same order, as the pre-portfolio shuffle.
+    const legs = legsOf.map((l) => shuffleLeg(l, rnd));
+
+    // 2. Replay each sleeve against its OWN account of `initialEquity`. No
+    //    sleeve sees another sleeve's P&L and no P&L is ever divided by N: the
+    //    scaling happens exactly once, in the average below.
+    const paths = legs.map((leg) => {
+      const eq = new Array(leg.length);
+      let e = initialEquity;
+      for (let i = 0; i < leg.length; i++) { e += leg[i].pnl; eq[i] = e; }
+      return eq;
+    });
+
+    // 3. Average the N sleeves into the book on a shared step axis. The axis is
+    //    as long as the LONGEST sleeve, so a shorter sleeve is `null` past its
+    //    own end and is forward-filled from its own last value. N = 1 => the
+    //    axis is exactly that sleeve and no forward-fill ever fires.
+    const steps = Math.max(...paths.map((p) => p.length));
+    let a = initialEquity, peak = initialEquity, dd = 0;
+    for (let k = 0; k < steps; k++) {
+      let sum = 0;
+      for (let j = 0; j < N; j++) {
+        const p = paths[j];
+        sum += k < p.length ? p[k] : p[p.length - 1];      // forward-fill, own value
+      }
+      a = sum / N;
+      if (a > peak) peak = a;
+      if (peak > 0) dd = Math.max(dd, (peak - a) / peak);
     }
-    let eq = initialEquity, peak = initialEquity, dd = 0;
+    maxDds.push(dd);
+    if (dd * 100 >= ddThresholdPct) breached++;
+
+    // Longest losing run of CONSECUTIVE LOSING TRADES, on the time-merged
+    // stream of the N shuffled sleeves. This stays a TRADE-level quantity — the
+    // repo's rule pools trade statistics and forbids pooling only paths — so it
+    // is unaffected by the portfolio model. The merge is a k-way merge on
+    // trade time, and with one sleeve it is the identity, so the single-symbol
+    // number is the pre-portfolio one. It is deliberately NOT computed from the
+    // book's step returns: the geared replay drove the account negative, and a
+    // ratio of two negatives flips the sign of a profitable step.
     let streak = 0, worstStreak = 0;
-    for (const p of bag) {
-      eq += p;
-      if (eq > peak) peak = eq;
-      if (peak > 0) dd = Math.max(dd, (peak - eq) / peak);
+    for (const p of mergeByTime(legs)) {
       streak = p <= 0 ? streak + 1 : 0;
       if (streak > worstStreak) worstStreak = streak;
     }
-    maxDds.push(dd);
     streaks.push(worstStreak);
-    if (dd * 100 >= ddThresholdPct) breached++;
+
+    // DIAGNOSTIC ONLY, read by no criterion: the mean of the N per-sleeve
+    // drawdowns. Reported so the difference between it and the book's own
+    // drawdown above is visible rather than asserted.
+    compDds.push(paths.reduce((acc, p) => acc + sleeveDrawdown(p, initialEquity), 0) / N);
   }
   const q = (arr, p) => { const a = [...arr].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(a.length * p))]; };
 
@@ -300,15 +416,119 @@ export function monteCarlo({ trades, initialEquity, runs = 1000, seed = 12345, d
     trades: trades.length,
     finalEquity: Number(finalEquity.toFixed(2)),        // identical for every ordering
     note: "finalEquity is order-invariant; the distributions below are the risk signal",
+    symbols: sleeves.map((g) => g.symbol),
+    symbolCount: N,
+    scope: N > 1
+      ? `equal-weight portfolio of ${N} symbols: ${N} independent sub-accounts of `
+        + `${initialEquity}, book equity = arithmetic mean of the ${N} curves at every step; `
+        + `trades shuffled WITHIN each symbol only`
+      : "single account",
+    portfolioModel: "equal-weight additive (arithmetic mean of per-symbol equity curves)",
     medianMaxDrawdownPct: Number((q(maxDds, 0.5) * 100).toFixed(2)),
     p95MaxDrawdownPct: Number((q(maxDds, 0.95) * 100).toFixed(2)),
     worstMaxDrawdownPct: Number((Math.max(...maxDds) * 100).toFixed(2)),
+    // DIAGNOSTIC ONLY, read by no criterion. It sits below the book's own
+    // drawdown under the non-negative-equity condition — no sleeve's path ever
+    // crossing zero — which is the case the ruin rule produces. That ordering
+    // is a consequence of the book's equity being the MEAN of its sleeves'
+    // (an average cannot fall below the average of their peaks by more than the
+    // average of their declines) and NOT an unconditional bound: once a sleeve
+    // is driven negative the ratio `(peak - eq) / peak` is measured from a
+    // denominator that is itself below the peak, and a book can then report
+    // more than 100%. The selftest below pins the ordering on a fixture that
+    // stays non-negative; it does not establish it for books that do not.
+    maxDrawdownPctComponentsMeanMedian: Number((q(compDds, 0.5) * 100).toFixed(2)),
+    diagnosticOnly: ["maxDrawdownPctComponentsMeanMedian"],
     ddThresholdPct,
     probabilityOfBreachingThreshold: Number(((breached / runs) * 100).toFixed(2)),
     medianLongestLosingStreak: q(streaks, 0.5),
     p95LongestLosingStreak: q(streaks, 0.95),
     observedLongestLosingStreak: Math.max(...streaks),
   };
+}
+
+/**
+ * Split a trade list into per-symbol sleeves, each keeping its OWN trades.
+ *
+ * Keyed on `t.symbol`, which `evidence.mjs` stamps on every pooled trade. A raw
+ * `simulate()` trade carries no symbol and therefore forms exactly one sleeve —
+ * which is what makes every single-symbol caller bit-identical to the
+ * pre-portfolio implementation.
+ *
+ * Robustness.mjs groups the same way and carries each group's own returns; the
+ * two are pinned together by the cross-check selftest, and the time precedence
+ * below is deliberately identical to `robustness.mjs`'s `tradeTime`, because
+ * only one of the two files can be edited at a time and a silent divergence
+ * here would move the block bootstrap's ordering.
+ */
+function groupSleeves(trades) {
+  const by = new Map();
+  trades.forEach((t, i) => {
+    const k = t.symbol ?? "_single";
+    let g = by.get(k);
+    if (!g) { g = { symbol: k, rows: [], times: [] }; by.set(k, g); }
+    g.rows.push(t);
+    g.times.push(tradeTimeOf(t, i));
+  });
+  return [...by.values()];
+}
+
+/**
+ * When a trade happened. `evidence.mjs` stamps `time` (exit time plus a
+ * per-symbol bar offset) on every pooled trade, which is the normal case; raw
+ * `simulate()` trades carry only `entryTime`/`exitTime`. With no timestamp at
+ * all the only ordering that exists is the order supplied, and collapsing every
+ * trade onto t=0 would destroy the path.
+ */
+function tradeTimeOf(t, position) {
+  if (Number.isFinite(t.time)) return t.time;
+  if (Number.isFinite(t.exitTime)) return t.exitTime;
+  if (Number.isFinite(t.entryTime)) return t.entryTime;
+  return position;
+}
+
+/** Seeded Fisher-Yates over one sleeve, carrying each trade's time with it. */
+function shuffleLeg({ pnls, times }, rnd) {
+  const idx = pnls.map((_, i) => i);
+  for (let i = idx.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [idx[i], idx[j]] = [idx[j], idx[i]];
+  }
+  return idx.map((i) => ({ pnl: pnls[i], time: times[i] }));
+}
+
+/**
+ * k-way merge of the shuffled sleeves on trade time, yielding one P&L stream.
+ * Ties go to the lowest sleeve index, so the merge is deterministic. With a
+ * single sleeve it is the identity on that sleeve's shuffled order.
+ */
+function mergeByTime(legs) {
+  const n = legs.length;
+  const cur = new Array(n).fill(0);
+  const out = [];
+  let left = legs.reduce((a, l) => a + l.length, 0);
+  while (left > 0) {
+    let best = -1, bt = Infinity;
+    for (let k = 0; k < n; k++) {
+      if (cur[k] >= legs[k].length) continue;
+      const t = legs[k][cur[k]].time;
+      if (t < bt) { bt = t; best = k; }
+    }
+    if (best < 0) break;
+    out.push(legs[best][cur[best]].pnl);
+    cur[best]++; left--;
+  }
+  return out;
+}
+
+/** Max drawdown of ONE sleeve's own equity path. Diagnostic input only. */
+function sleeveDrawdown(eq, base) {
+  let peak = base, dd = 0;
+  for (const v of eq) {
+    if (v > peak) peak = v;
+    if (peak > 0) dd = Math.max(dd, (peak - v) / peak);
+  }
+  return dd;
 }
 
 // ----------------------------------------------------------- walk-forward
@@ -342,15 +562,57 @@ export function walkForward({ bars, signal, cfg = {}, folds = 4, warmup = DEFAUL
   }
   const traded = out.filter((o) => o.trades > 0);
   const totalTrades = traded.reduce((a, o) => a + o.trades, 0);
+  const foldsProfitable = traded.filter((o) => o.totalReturnPct > 0).length;
+
+  // A SILENT FOLD IS A FAILED FOLD, SO THE DENOMINATOR IS EVERY FOLD.
+  //
+  // This used to divide by `traded.length` — the folds that happened to fire.
+  // That made a strategy that cannot trade for a whole out-of-sample window
+  // INVISIBLE to the statistic instead of penalised by it: a signal long until
+  // the last fold and silent through it reported folds=4, foldsWithTrades=3 and
+  // a perfect consistency of 100, and cleared the v1 `walk-forward consistency %`
+  // criterion (MIN_WF = 50) on that number. The fold the strategy had no opinion
+  // about was read as evidence it worked, which is the exact
+  // "only-right-for-the-average-of-the-sample" failure this statistic exists to
+  // detect.
+  //
+  // It is not a missing datum that was dropped. A fold with no out-of-sample
+  // trades had a complete-sample return of 0 — it did not trade, so it neither
+  // gained nor lost — and 0 is not `> 0`, so it was already excluded from the
+  // NUMERATOR. Only the denominator was flattering it. `robustness.mjs`'s
+  // `anchoredWalkForward` (the v2 implementation of the same idea) was fixed
+  // earlier in this changeset and counts silent folds the same way; the two
+  // must not disagree, because gate.mjs reads THIS one.
+  //
+  // WHAT THIS DOES NOT DO. It narrows the hole; it does not close it. At
+  // MIN_WF = 50 a strategy silent for one fold in four now reads 75% and STILL
+  // PASSES. Closing that needs a v1 fold-coverage criterion, which is a
+  // protocol change (it moves the v1 hash) and therefore the repo owner's
+  // decision, not a computation fix. Until it exists, `foldCoveragePct` /
+  // `foldsSilent` below are the only visible sign of the gap, which is why they
+  // are in the record rather than left implicit in the denominator.
+  const total = out.length;
+
   return {
-    folds: out.length,
+    folds: total,
     perFold: out,
     foldsWithTrades: traded.length,
+    // Diagnostics, not criteria: no v1 criterion reads these, because adding one
+    // would move the protocol hash. They exist so the denominator is auditable
+    // from the artefact alone. Named to match `robustness.mjs`'s v2 fields
+    // (`foldsSilent` is identical; v2's coverage field is `foldCoverage`).
+    foldsSilent: total - traded.length,
+    foldCoveragePct: total ? Number(((traded.length / total) * 100).toFixed(1)) : null,
     totalTrades,
-    foldsProfitable: traded.filter((o) => o.totalReturnPct > 0).length,
-    consistency: traded.length
-      ? Number(((traded.filter((o) => o.totalReturnPct > 0).length / traded.length) * 100).toFixed(1))
+    foldsProfitable,
+    consistencyDenominator: total,
+    consistency: total
+      ? Number(((foldsProfitable / total) * 100).toFixed(1))
       : null,
+    consistencyNote: total === traded.length
+      ? `profitable folds / all ${total} folds; no fold was silent`
+      : `${foldsProfitable}/${total} folds profitable out of sample; `
+        + `${total - traded.length} silent fold(s) counted as failures, not excluded`,
     caveat: traded.length && totalTrades / traded.length < 20
       ? "few trades per fold - consistency is weakly determined"
       : null,
@@ -389,7 +651,7 @@ async function runCli(argv) {
   console.log(JSON.stringify(report, null, 2));
   console.log("\n--- verdicts ---");
   const v = (ok, label) => console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
-  v(m.trades >= 30, `trade count >= 30 (have ${m.trades}) � below this, results are noise`);
+  v(m.trades >= 30, `trade count >= 30 (have ${m.trades}) - below this, results are noise`);
   v(m.profitFactor > 1, `profit factor > 1 (have ${m.profitFactor})`);
   v(m.maxDrawdownPct < 40, `max drawdown < 40% (have ${m.maxDrawdownPct}%)`);
   v(wf.consistency == null || wf.consistency >= 50, `walk-forward consistency >= 50% (have ${wf.consistency}%)`);
@@ -679,9 +941,290 @@ if (IS_HARNESS && process.argv[2] !== "run") {
   const mcDown = monteCarlo({ trades: rDown.trades, initialEquity: DEFAULTS.equity, runs: 200 });
   check("a losing strategy ends below starting equity", mcDown.finalEquity < DEFAULTS.equity, `${mcDown.finalEquity}`);
 
+  // ==================================================================
+  // THE EQUAL-WEIGHT BOOK. Cross-checks, falsifiers, and the promise that a
+  // single-symbol caller did not move.
+  //
+  // WHICH DIRECTION THE DEPENDENCY RUNS
+  //
+  //   robustness.mjs  ->  harness.mjs      (robustness.mjs:28 imports it)
+  //   gate.mjs        ->  protocol.mjs     (and NOT harness.mjs)
+  //   harness.mjs     ->  data.mjs, risk-engine.mjs      <- a LEAF
+  //
+  // harness.mjs is the bottom of the graph, so it may not statically import
+  // either of the other two: importing robustness.mjs from here closes a cycle
+  // (robustness.mjs imports harness.mjs), and there is a second, independent
+  // blocker — robustness.mjs's `equalWeightPath` is module-private, so the
+  // cross-check could not call it even without the cycle. Closing that gap is a
+  // one-word change (`export`) in a file this change does not own.
+  //
+  // So this suite pins the model two ways that are available from the leaf:
+  //
+  //   1. against CLOSED FORM. Two fixtures whose every trade is the same size
+  //      within a sleeve, so the shuffle cannot change the answer and the exact
+  //      book drawdown is computable by hand. A test whose expected value is
+  //      derived from the specification rather than from another copy of the
+  //      implementation cannot drift with it.
+  //   2. against gate.mjs's `equalWeightBook` — a genuinely separate
+  //      implementation of the same model (index-aligned dense arrays with
+  //      forward/back-fill, versus the event merge used here), reached by a
+  //      DYNAMIC import so the shipped module graph is unchanged. This is the
+  //      implementation that produces `evidence.agg.maxDrawdownPct`, so
+  //      pinning to it is what puts the `P(dd breach)` criterion and the
+  //      `max drawdown %` criterion on one provably shared basis.
+  //
+  // The 5x-geared model this replaced is falsified by fixture A below, and the
+  // negative control proves the falsifier can tell the two models apart.
+
+  // The pre-portfolio implementation, verbatim, as a bit-identity oracle. This
+  // is not a second model to agree with — it is a copy of the OLD one, so
+  // "single-symbol callers did not move" is a fact about the code and not a
+  // claim about remembered numbers.
+  const legacyMonteCarlo = ({ trades, initialEquity, runs = 1000, seed = 12345, ddThresholdPct = 20 }) => {
+    if (trades.length < 5) return { runs: 0, note: "too few trades" };
+    let s = seed >>> 0;
+    const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+    const pnls = trades.map((t) => t.pnl);
+    const finalEquity = initialEquity + pnls.reduce((a, b) => a + b, 0);
+    const maxDds = [], streaks = [];
+    let breached = 0;
+    for (let r = 0; r < runs; r++) {
+      const bag = pnls.slice();
+      for (let i = bag.length - 1; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1));
+        [bag[i], bag[j]] = [bag[j], bag[i]];
+      }
+      let eq = initialEquity, peak = initialEquity, dd = 0;
+      let streak = 0, worstStreak = 0;
+      for (const p of bag) {
+        eq += p;
+        if (eq > peak) peak = eq;
+        if (peak > 0) dd = Math.max(dd, (peak - eq) / peak);
+        streak = p <= 0 ? streak + 1 : 0;
+        if (streak > worstStreak) worstStreak = streak;
+      }
+      maxDds.push(dd); streaks.push(worstStreak);
+      if (dd * 100 >= ddThresholdPct) breached++;
+    }
+    const q = (arr, p) => { const a = [...arr].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(a.length * p))]; };
+    return {
+      runs, trades: trades.length, finalEquity: Number(finalEquity.toFixed(2)),
+      medianMaxDrawdownPct: Number((q(maxDds, 0.5) * 100).toFixed(2)),
+      p95MaxDrawdownPct: Number((q(maxDds, 0.95) * 100).toFixed(2)),
+      worstMaxDrawdownPct: Number((Math.max(...maxDds) * 100).toFixed(2)),
+      ddThresholdPct,
+      probabilityOfBreachingThreshold: Number(((breached / runs) * 100).toFixed(2)),
+      medianLongestLosingStreak: q(streaks, 0.5),
+      p95LongestLosingStreak: q(streaks, 0.95),
+      observedLongestLosingStreak: Math.max(...streaks),
+    };
+  };
+
+  // A multi-symbol trade list. `time` is what the merge orders on, and it is
+  // offset per symbol the way evidence.mjs offsets it, so the merge has to
+  // interleave two real, interleaved windows rather than concatenate them.
+  const mkSleeve = (symbol, pnls, t0) => pnls.map((p, i) => ({
+    symbol, pnl: p, entryTime: t0 + i * 900, exitTime: t0 + (i + 1) * 900, time: t0 + (i + 1) * 900,
+  }));
+  const T0 = 1767225600;
+  const uniform = { equity: 1000 };
+  //   A: ten winners of +100, sleeve 1000 -> 2000, sleeve drawdown 0
+  //   B: ten losers of -100, sleeve 1000 ->    0, sleeve drawdown 100%
+  //   Book at step k: mean(1000+100(k+1), 1000-100(k+1)) = 1000, EXACTLY, in
+  //   every ordering. Book drawdown 0, book return 0.
+  const fxA = [...mkSleeve("AAA", Array(10).fill(100), T0), ...mkSleeve("BBB", Array(10).fill(-100), T0 + 4000000)];
+  //   A: four winners of +50, sleeve 1000 -> 1200, then RUINED (shorter sleeve)
+  //   B: ten losers of -100,  sleeve 1000 ->    0, sleeve drawdown 100%
+  //   Book, on the longer sleeve's axis with A forward-filled from its own last:
+  //     975 950 925 900 850 800 750 700 650 600
+  //   Peak 1000 at the start, monotone down, so book drawdown 4000/1000 = 40%
+  //   and book final 600. Unequal lengths, so this is what exercises the
+  //   forward-fill, and a sleeve that stopped is never dropped: dropping A
+  //   instead would delete its gains and report a much shallower book.
+  const fxB = [...mkSleeve("AAA", Array(4).fill(50), T0), ...mkSleeve("BBB", Array(10).fill(-100), T0 + 4000000)];
+
+  // --- 1. single-symbol callers are BIT-IDENTICAL to the old implementation
+  {
+    const shared = ["finalEquity", "medianMaxDrawdownPct", "p95MaxDrawdownPct", "worstMaxDrawdownPct",
+      "ddThresholdPct", "probabilityOfBreachingThreshold", "medianLongestLosingStreak",
+      "p95LongestLosingStreak", "observedLongestLosingStreak"];
+    const sets = { rChop: rChop.trades, rUp: rUp.trades, rDown: rDown.trades };
+    const diffs = [];
+    for (const [name, ts] of Object.entries(sets)) {
+      for (const [eq, runs, seed] of [[DEFAULTS.equity, 500, 12345], [DEFAULTS.equity, 200, 999], [2500, 300, 7]]) {
+        const now = monteCarlo({ trades: ts, initialEquity: eq, runs, seed });
+        const was = legacyMonteCarlo({ trades: ts, initialEquity: eq, runs, seed });
+        for (const f of shared) if (now[f] !== was[f]) diffs.push(`${name}/${f}: ${was[f]} -> ${now[f]}`);
+      }
+    }
+    check("single-symbol monteCarlo is BIT-IDENTICAL to the pre-portfolio implementation",
+      diffs.length === 0,
+      diffs.length ? diffs.slice(0, 4).join("; ") : `${Object.keys(sets).length} single-symbol sets x 3 configs x ${shared.length} fields`);
+    check("a single-symbol caller is reported as a one-symbol book",
+      monteCarlo({ trades: rChop.trades, initialEquity: DEFAULTS.equity, runs: 200 }).symbolCount === 1
+      && monteCarlo({ trades: rChop.trades, initialEquity: DEFAULTS.equity, runs: 200 }).symbols[0] === "_single",
+      "raw simulate() trades carry no symbol, so they form exactly one sleeve");
+  }
+
+  // --- 2. closed-form cross-check: fixture A
+  {
+    const mcA = monteCarlo({ trades: fxA, initialEquity: 1000, runs: 400, seed: 12345 });
+    check("equal-weight book: offsetting sleeves give a FLAT book (fixture A, closed form)",
+      mcA.medianMaxDrawdownPct === 0 && mcA.p95MaxDrawdownPct === 0 && mcA.worstMaxDrawdownPct === 0
+      && mcA.finalEquity === 1000,
+      `median/p95/worst dd ${mcA.medianMaxDrawdownPct}/${mcA.p95MaxDrawdownPct}/${mcA.worstMaxDrawdownPct}%, final ${mcA.finalEquity}`);
+    check("equal-weight book: P(dd breach) is exactly 0 on fixture A",
+      mcA.probabilityOfBreachingThreshold === 0, `${mcA.probabilityOfBreachingThreshold}%`);
+
+    // NEGATIVE CONTROL. A 5x-geared replay of the same trades is a single
+    // 1000-unit account taking 2583-style shocks from both symbols, so the
+    // +100s and the -100s interleave and the path random-walks. It must NOT
+    // reproduce the flat book, or the test above proves nothing.
+    const gearedA = legacyMonteCarlo({ trades: fxA, initialEquity: 1000, runs: 400, seed: 12345 });
+    check("negative control: the 5x-geared model FAILS fixture A (so the check above discriminates)",
+      gearedA.medianMaxDrawdownPct > 0 && gearedA.probabilityOfBreachingThreshold > 0,
+      `geared median dd ${gearedA.medianMaxDrawdownPct}%, P(breach) ${gearedA.probabilityOfBreachingThreshold}% vs book's 0%/0%`);
+  }
+
+  // --- 3. closed-form cross-check: fixture B, unequal sleeves, forward-fill
+  {
+    const mcB = monteCarlo({ trades: fxB, initialEquity: 1000, runs: 400, seed: 12345 });
+    check("equal-weight book: a shorter sleeve is forward-filled, not dropped (fixture B, closed form)",
+      mcB.medianMaxDrawdownPct === 40 && mcB.p95MaxDrawdownPct === 40 && mcB.worstMaxDrawdownPct === 40
+      && mcB.finalEquity === 600,
+      `dd ${mcB.medianMaxDrawdownPct}%, final ${mcB.finalEquity} (expected 40% and 600; book path 975..600)`);
+    check("a book is never deeper than its worst sleeve (the theorem of the mean)",
+      mcB.medianMaxDrawdownPct <= 100 && mcB.medianMaxDrawdownPct <= mcB.maxDrawdownPctComponentsMeanMedian,
+      `book ${mcB.medianMaxDrawdownPct}% vs mean-of-components ${mcB.maxDrawdownPctComponentsMeanMedian}% vs worst sleeve 100%`);
+  }
+
+  // --- 4. the shuffle never migrates a trade between symbols
+  {
+    // Each sleeve's trades are all the same size, so a shuffle INSIDE a symbol
+    // cannot change its own path — and the answer must therefore be identical
+    // for every seed. A pooled shuffle would interleave the two symbols'
+    // trades and the answer would move with the seed, which is exactly the bug.
+    const seeds = [12345, 999, 7, 31337, 2].map((seed) =>
+      monteCarlo({ trades: fxA, initialEquity: 1000, runs: 200, seed }));
+    const moved = seeds.some((m) => m.medianMaxDrawdownPct !== seeds[0].medianMaxDrawdownPct
+      || m.probabilityOfBreachingThreshold !== seeds[0].probabilityOfBreachingThreshold
+      || m.p95LongestLosingStreak !== seeds[0].p95LongestLosingStreak);
+    check("shuffling is per-symbol: a uniform-sleeve book is seed-invariant",
+      !moved,
+      `5 seeds -> median dd ${[...new Set(seeds.map((m) => m.medianMaxDrawdownPct))].join("/")}%, `
+      + `P(breach) ${[...new Set(seeds.map((m) => m.probabilityOfBreachingThreshold))].join("/")}%`);
+    const pooledSeeds = [12345, 999, 7, 31337].map((seed) =>
+      legacyMonteCarlo({ trades: fxA, initialEquity: 1000, runs: 200, seed }));
+    // The MEDIAN happens to be a coarse lattice value on a 20-step walk and can
+    // coincide across seeds, so the control reads the tail, which cannot.
+    check("negative control: the geared model IS seed-variant on the same trades",
+      new Set(pooledSeeds.map((m) => `${m.p95MaxDrawdownPct}/${m.worstMaxDrawdownPct}`)).size > 1,
+      `geared p95/worst dd across 4 seeds: ${pooledSeeds.map((m) => `${m.p95MaxDrawdownPct}/${m.worstMaxDrawdownPct}`).join(", ")}`);
+  }
+
+  // --- 5. the return is the MEAN of the per-symbol returns, never the product
+  {
+    const fxC = [
+      ...mkSleeve("AAA", Array(6).fill(100), T0),
+      ...mkSleeve("BBB", Array(6).fill(-50), T0 + 4000000),
+      ...mkSleeve("CCC", Array(6).fill(25), T0 + 8000000),
+    ];
+    const mcC = monteCarlo({ trades: fxC, initialEquity: 1000, runs: 100, seed: 5 });
+    const per = [100, -50, 25].map((p) => (6 * p) / 1000);
+    const mean = per.reduce((a, b) => a + b, 0) / per.length;
+    const product = per.reduce((a, b) => a * (1 + b), 1) - 1;
+    check("portfolio return is the MEAN of the N per-symbol returns (additive, never compounded)",
+      Math.abs((mcC.finalEquity / 1000 - 1) - mean) < 1e-9 && Math.abs(product - mean) > 1e-6,
+      `book ${((mcC.finalEquity / 1000 - 1) * 100).toFixed(2)}% = mean ${(mean * 100).toFixed(2)}%; `
+      + `the 3x-geared product would say ${(product * 100).toFixed(2)}%`);
+  }
+
+  // --- 6. cross-check against gate.mjs's own equal-weight implementation
+  //
+  // Same trades, two implementations, no shared code: gate.mjs averages
+  // index-aligned dense arrays with its own forward/back-fill; the code above
+  // merges per-sleeve event streams onto a step axis. DYNAMIC import, so the
+  // shipped module graph is untouched — harness.mjs stays a leaf and nothing
+  // in production code gains a dependency it does not need.
+  {
+    const { equalWeightBook, pathStats, equalWeightPath } = await import("./gate.mjs");
+    // Rebuild the fixtures the way evidence.mjs does: one equity series per
+    // symbol, `null`/absent past the end of the shorter sleeve.
+    const rowsA = [...mkSleeve("AAA", Array(10).fill(100), T0), ...mkSleeve("BBB", Array(10).fill(-100), T0 + 4000000)];
+    const rowsB = [...mkSleeve("AAA", Array(4).fill(50), T0), ...mkSleeve("BBB", Array(10).fill(-100), T0 + 4000000)];
+    const eqSeries = (rows) => rows.map((_, i) => 1000 + rows.slice(0, i + 1).reduce((a, x) => a + x.pnl, 0));
+    const alignedB = [eqSeries(rowsB.filter((t) => t.symbol === "AAA")), eqSeries(rowsB.filter((t) => t.symbol === "BBB"))];
+    const bookFromGate = equalWeightBook(alignedB, { base: 1000 });
+    const mcB2 = monteCarlo({ trades: fxB, initialEquity: 1000, runs: 400, seed: 12345 });
+    check("harness.monteCarlo's book drawdown EQUALS gate.equalWeightBook's on the same trades",
+      Math.abs(bookFromGate.maxDrawdownPct - mcB2.medianMaxDrawdownPct) < 0.005
+      && Math.abs(bookFromGate.totalReturnPct - (mcB2.finalEquity / 1000 - 1) * 100) < 0.005,
+      `gate ${bookFromGate.maxDrawdownPct}% / ret ${bookFromGate.totalReturnPct}%  vs  `
+      + `harness ${mcB2.medianMaxDrawdownPct}% / ret ${((mcB2.finalEquity / 1000 - 1) * 100).toFixed(2)}%`);
+    const bookA = equalWeightBook([eqSeries(rowsA.filter((t) => t.symbol === "AAA")), eqSeries(rowsA.filter((t) => t.symbol === "BBB"))], { base: 1000 });
+    check("the two implementations also agree on the FLAT book of fixture A",
+      monteCarlo({ trades: fxA, initialEquity: 1000, runs: 100, seed: 1 }).medianMaxDrawdownPct === bookA.maxDrawdownPct,
+      `both report a ${bookA.maxDrawdownPct}% drawdown on offsetting sleeves`);
+    const denseB = pathStats(equalWeightPath(alignedB), 1000);
+    check("harness's forward-fill matches gate's forward-fill on a truncated sleeve",
+      Math.abs(denseB.maxDrawdownPct - 40) < 0.005 && denseB.base === 1000,
+      `gate's own dense-array fill of the same 4-vs-10 sleeve pair lands on ${denseB.maxDrawdownPct}% over ${equalWeightPath(alignedB).length} points`);
+  }
+
   // Walk-forward
   const wf = walkForward({ bars: up, signal: alwaysLong, folds: 3 });
   check("walk-forward produces folds", wf.folds === 3, `${wf.folds}`);
+
+  // --- REGRESSION: a silent out-of-sample fold must not be a free pass
+  //
+  // `consistency` used to divide by `traded.length`, so a fold the strategy
+  // could not trade in was removed from the sample instead of failing it. A
+  // signal long for the first three folds and silent for the fourth reported
+  // consistency 100 on 3/4 folds and cleared the v1 `walk-forward consistency %`
+  // criterion (MIN_WF = 50) with a perfect mark. `robustness.mjs` already pins
+  // the same invariant for the v2 anchored implementation; this is the v1 copy,
+  // and gate.mjs reads THIS one.
+  {
+    // v1 fold geometry: usable = bars.slice(warmup), size = floor(usable/folds),
+    // fold f tests usable[f*size, (f+1)*size).
+    const nB = 4000, wu = 100, nf = 4;
+    const big = mk(nB, 0.3);
+    const size = Math.floor((nB - wu) / nf);
+    const lastFold = big[wu + (nf - 1) * size].time;
+    const diesInLastFold = ({ bar }) => (bar.time < lastFold ? { side: "buy" } : null);
+    const dead = walkForward({ bars: big, signal: diesInLastFold, folds: nf, warmup: wu });
+    const silent = dead.foldsSilent ?? dead.folds - dead.foldsWithTrades;
+
+    check("the one-dead-fold case really is one dead fold",
+      silent === 1 && dead.foldsWithTrades === nf - 1,
+      `folds ${dead.folds}, traded ${dead.foldsWithTrades}, silent ${silent}`);
+    check("the consistency denominator is EVERY fold, not the folds that fired",
+      dead.consistencyDenominator === nf && dead.foldsProfitable === nf - 1 && dead.consistency < 100,
+      `${dead.foldsProfitable}/${dead.consistencyDenominator} = ${dead.consistency}%`);
+    check("a silent fold is REPORTED, not silently absorbed into the denominator",
+      silent === 1 && dead.foldCoveragePct === 75,
+      `foldsSilent ${dead.foldsSilent}, foldCoveragePct ${dead.foldCoveragePct}%`);
+    check("the run says out loud that silent folds count as failures",
+      /counted as failures/.test(dead.consistencyNote || ""), dead.consistencyNote);
+
+    // The control: nothing about a strategy that trades throughout may move.
+    const live = walkForward({ bars: big, signal: alwaysLong, folds: nf, warmup: wu });
+    check("a strategy that trades in every fold is unchanged: 100% on every field",
+      live.consistency === 100 && live.foldsSilent === 0 && live.foldCoveragePct === 100
+      && live.consistencyDenominator === nf && live.foldsWithTrades === nf,
+      `consistency ${live.consistency}%, silent ${live.foldsSilent}, coverage ${live.foldCoveragePct}%`);
+
+    // Silent in EVERY fold. This used to return `null` and the CLI verdict
+    // printer treats a null as "no verdict" (`wf.consistency == null || ...`),
+    // so a strategy that never traded out of sample read as neither pass nor
+    // fail. It is now 0, which is what the complete-sample return is.
+    const neverTrades = walkForward({ bars: big, signal: () => null, folds: nf, warmup: wu });
+    check("a strategy that never trades out of sample is 0%, not a null",
+      neverTrades.consistency === 0 && neverTrades.foldsSilent === nf
+      && (neverTrades.consistency ?? 0) < 50,
+      `consistency ${neverTrades.consistency}, silent ${neverTrades.foldsSilent}/${neverTrades.folds} `
+      + `-> v1 bar >= 50 FAILS`);
+  }
 
   console.log(`\n  ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

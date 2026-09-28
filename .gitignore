@@ -21,3 +21,28 @@ research/registry-v2/state.json
 .claude/settings.local.json
 
 *.log
+
+# --- backtesting/ (Python + vectorbt stack) -------------------------------
+# NOT ignored wholesale: the Python source (quantlab.py, run_experiment.py,
+# monte_carlo.py, parity_tests.py) is real work and may belong in git. Only the
+# heavy or generated paths are excluded, because a bare `git add -A` over this
+# directory previously tried to stage ~1.25 GB across ~100k files and timed out.
+#
+# backtesting/.venv    980 MB - numpy/scipy/pandas/numba/vectorbt(+rust)/pyarrow
+backtesting/.venv/
+# backtesting/Lean     275 MB - vendored QuantConnect LEAN (C#) engine + its
+#                        TestData corpus. Third-party; belongs in a submodule or
+#                        a documented clone step, not in this repo's history.
+backtesting/Lean/
+# backtesting/.dotnet   714 MB - .NET 8 SDK toolchain used to BUILD LEAN.
+backtesting/.dotnet/
+# Any .NET build output, wherever it lands under backtesting/.
+backtesting/**/bin/
+backtesting/**/obj/
+# Generated experiment tracking + reports.
+backtesting/mlruns/
+backtesting/mlflow.db
+backtesting/__pycache__/
+backtesting/**/*.pyc
+backtesting/*.html
+backtesting/backtesting/

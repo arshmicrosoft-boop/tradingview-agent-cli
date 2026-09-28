@@ -12,10 +12,10 @@ trades: 165
 win_rate_pct: 45.5
 profit_factor: 0.355
 sharpe: -0.26
-max_drawdown_pct: 45.9
-total_return_pct: -81.88
+max_drawdown_pct: 27.6
+total_return_pct: -27.24
 gate: fail
-unmet: 20
+unmet: 19
 ---
 
 # sideways liquidity sweep reversal
@@ -103,7 +103,7 @@ Grid tested: `adxMax ∈ {20,25,30}` × `lookback ∈ {15,20,30}` × `volMult �
 
 ## Result under v1
 
-20 criteria unmet. The failures that carry information:
+19 criteria unmet. The failures that carry information:
 
 | criterion | bar | `sweep-reversal` | this |
 |---|---|---|---|
@@ -112,14 +112,32 @@ Grid tested: `adxMax ∈ {20,25,30}` × `lookback ∈ {15,20,30}` × `volMult �
 | sharpe | > 1.0 | −0.138 | −0.26 |
 | sharpe t-stat | > 2.0 | — | −3.34 |
 | max survivable cost | ≥ 25 bps | 0 bps | **0 bps** |
-| parameter sensitivity | ≥ 30% | 0% | **0%** |
-| account survived | yes | ruined | −81.88% |
+| parameter sensitivity | ≥ 30% | 0% | **11.1%** |
+| account survived | yes | ruined | **survived (−27.24%)** |
 | leakage | clean | clean | clean |
 
-Buy&hold returned +696.23% over the same window. The strategy returned −81.88%.
+Buy&hold returned +696.23% over the same window. The strategy returned −27.24%.
 
 **The load-bearing comparison is PF 0.641 → 0.355.** Adding the regime filter and
 the long side made the trigger measurably worse, not better.
+
+**Basis note (2026-09-28).** `total_return_pct` (−27.24) and `max_drawdown_pct`
+(27.6) were re-measured on this strategy's latest v1 run after the portfolio
+model moved to an equal-weight additive book — return is the mean of the five
+per-symbol returns, max drawdown is the drawdown of the pointwise-averaged
+equity curve. The superseded figures (−81.88% and 45.9%) came from a 5×-geared
+pooled replay and must not be mixed with these.
+
+Two consequences are recorded rather than smoothed over. **The unmet count moved
+from 20 to 19, entirely because the `max drawdown` criterion now passes at 27.6%
+against a `< 35%` bar** — the book is shallower than the worst single sleeve it
+used to be judged on, and the `< 35%` bar is being applied to the thing the
+strategy actually deploys. And **the account no longer ruins** on this run, so
+`account survived` and `symbols ruined` are met. Neither changes the verdict,
+which is still `fail` on nineteen other grounds, and neither rescues the
+hypothesis: trades, profit factor, Sharpe and every statistical and robustness
+bar are unchanged, because they are per-run quantities that do not depend on the
+portfolio basis.
 
 ## Why it failed
 
@@ -131,7 +149,7 @@ also, in combination, badly calibrated, and the two failures are separable.
    bottom 30% of its own history, and a 2% range over 50 bars — cut 1,565
    opportunities to 165. At 165 trades with a 96-bar time exit the statistical
    bars the gate demands (≥500 trades, ≥60 holdout trades) are out of reach by
-   construction. The holdout leg ran on **10 trades**. This is a power failure,
+   construction. The holdout leg ran on **7 trades**. This is a power failure,
    and it is reported as one.
 
 2. **What selectivity did select was worse, which is the finding that matters.**

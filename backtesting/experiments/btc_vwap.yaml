@@ -1,0 +1,24 @@
+experiment:
+  name: btc_vwap_test
+  version: 1
+
+data:
+  asset: BTCUSDT
+  timeframe: 15m
+  source: binance
+  hash: abc123
+
+strategy:
+  name: VWAPReversion
+
+parameters:
+  vwap_length: 50
+  atr_stop: 2
+
+costs:
+  fee: 0.001
+  slippage: 0.0005
+
+validation:
+  walk_forward: true
+  monte_carlo_runs: 10000

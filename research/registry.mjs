@@ -58,11 +58,28 @@ export function record({ strategyId, version = 1, protocolHash, datasetHash, str
     strategy_id: strategyId,
     version,
     protocol_hash: protocolHash,
+    // WHAT THE HASH DOES NOT COVER, before you compare two records that share
+    // one. It is computed over the protocol JSON only, so it is
+    // tamper-evidence for THRESHOLDS and nothing else. The pipeline is outside
+    // it, which means `total_return_pct`, `max_drawdown_pct` and every criterion
+    // value in `failed_detail` can MOVE between two records on the SAME hash
+    // without `npm run verify` noticing. Two records on one hash means "same
+    // thresholds", NOT "same measurement". See the CRITERIA comment in
+    // gate.mjs for the full statement; the archive already contains two
+    // strategies with two records each on one hash and different failed lists.
     dataset_hash: datasetHash,
     strategy_hash: strategyHash,
     trades: metrics?.trades ?? null,
     profit_factor: metrics?.profitFactor ?? null,
     sharpe: metrics?.sharpe ?? null,
+    // These two are the EQUAL-WEIGHT BOOK figures, both read off one averaged
+    // equity curve: `total_return_pct` is the MEAN of the per-symbol returns
+    // and `max_drawdown_pct` is the max drawdown of that same averaged curve.
+    // They were, until the equal-weight rework, the compounded five-symbol
+    // product and the worst single symbol respectively — the two halves of
+    // different books, which is what the calmar wrong-PASS was built on. A
+    // record written before that change and one written after are not
+    // comparable even though the hash is the same.
     max_drawdown_pct: metrics?.maxDrawdownPct ?? null,
     total_return_pct: metrics?.totalReturnPct ?? null,
     tstat: verdict?.tstat ?? null,

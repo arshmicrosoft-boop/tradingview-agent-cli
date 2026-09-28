@@ -16,8 +16,8 @@ trades: 2583
 win_rate_pct: 21.4
 profit_factor: 0.935
 sharpe: -0.038
-max_drawdown_pct: 83.97
-total_return_pct: -99.61
+max_drawdown_pct: 54.55
+total_return_pct: -33.98
 gate: fail
 unmet: 19
 ---
@@ -117,18 +117,131 @@ Grid tested: `k ∈ {0.10, 0.25, 0.50, 1.00}` × `lookback ∈ {10, 20, 40}`.
   *What we learned*.
 - **Do not read the `k = 0.00` arm as a result about `donchian`.** The arm as
   specified cannot reproduce it; only the corrected arm can.
+- **Do not compare a recorded `walk-forward consistency %` to a freshly computed
+  one** without checking which computation produced it. Two different
+  populations and two different denominators have both fed that field; see
+  *Accepted methodology change* below.
+- **Do not compare this card's portfolio return or drawdown to a
+  pre-regeneration archive figure.** The portfolio basis changed and this card
+  has been refreshed onto the new one; see *Portfolio basis* below.
 
 ## Result under v1
 
 19 criteria unmet. The information is not in the criterion list, it is in the
 ladder.
 
-(It was 18 until the gate's walk-forward criterion was rewired to the
-self-tested `harness.walkForward()` instead of an inline splitter that scored
-each fold as `summedPnl / 1000` — five accounts' P&L over one account's equity,
-used only for its sign. The fix costs this card the walk-forward consistency
-criterion and changes no other number. See the root `README.md` §"Why the gate
-fails".)
+### Accepted methodology change: the walk-forward criterion is now measured
+
+**This card reads 19 unmet, not 18, because the gate's `walk-forward
+consistency %` criterion was recomputed on a corrected basis. That change was
+accepted deliberately. It is not a threshold nudge and not a regression, and it
+is recorded here so the next reader does not "fix" it back.**
+
+What the criterion used to read. v1 computed it with an inline splitter that cut
+the **pooled** five-symbol trade stream into four chunks and scored each fold as
+`summedPnl / 1000`. That is a sum of five accounts' P&L divided by one account's
+equity — five books over one book, a percentage with no referent. It was used
+for nothing but its **sign**, which is why the units never surfaced as a
+symptom. The implementation that has tests, `harness.walkForward()`, was never
+called by the runner at all, so the code with coverage and the code that decided
+the verdict were different code.
+
+What it reads now. `harness.walkForward()` on the **primary symbol (BTCUSDT)
+only**, with a per-fold warm-up so indicators are primed inside the fold. This is
+a different population *and* a different denominator: one account, divided by
+the equity actually being traded.
+
+The measured effect, on this card:
+
+| | before | after |
+|---|---|---|
+| `walk-forward consistency %` | **50** | **0** |
+| meaning of the number | 2 of 4 pooled folds positive by sign | 0 of 4 folds profitable on BTCUSDT |
+| bar (`MIN_WF`) | ≥ 50 | ≥ 50 |
+| criterion met | yes | **no** |
+| unmet criteria | 18 | **19** |
+| overall verdict | fail | fail |
+
+**The old 50 is the interesting half.** A strategy that was down **−33.98%**
+over the sample on the equal-weight basis — **−99.61%** on the superseded 5×-geared
+basis — and ruined on **4 of its 5 symbols** was handed a *passing* 50,
+because the pooled splitter only asked whether the sign of a five-account P&L
+sum was positive in each fold — and it was, because four losing accounts
+outnumbered one losing account that lost less. The new 0 is the honest reading:
+not one of the four BTCUSDT folds was profitable. Both numbers are real; they
+answer different questions, and only one of them was ever the criterion.
+
+Three things a reader should take from this:
+
+- **The direction was strictly stricter.** The new measurement can only lose a
+  criterion, never win one back — the old number was measured on a denominator
+  that had no referent and so was free to read anything.
+- **No verdict flipped.** This card's verdict was already `fail` on other
+  criteria, so the change moved an unmet count and nothing else. Across the
+  whole re-run the criterion's *value* moved on 7 of 11 strategies, and no
+  overall verdict flipped anywhere.
+- **The owner reviewed it and chose not to revert it**, on the grounds that the
+  old number was a sign test masquerading as a percentage. Reverting would mean
+  reinstating a meaningless 50 on a ruined book.
+
+The value `50 -> 0` is stable across the archive regeneration; this card cites
+no other strategy's aggregate numbers, because those are also being regenerated.
+
+**This did not move a threshold, and the protocol hash cannot see it.**
+`protocol.mjs:53` hashes the protocol JSON only, so `protocol_hash` covers
+**thresholds**, not **computation**; `verify.mjs:155` checks only that the latest
+run per strategy cites the current hash. A metric can therefore change under an
+unchanged `ab8d990e445b2927` without `npm run verify` failing. The card's
+`protocol_hash` field below is the same before and after this change, and its
+correctness is unaffected — the thresholds it pins are exactly the thresholds
+that ran. The limitation itself is documented in the "WHAT THE HASH ACTUALLY
+COVERS" blocks in `gate.mjs`, `evidence.mjs` and `registry.mjs`; see also the
+root `README.md` §"Why the gate fails" defect 3.
+
+### Portfolio basis: equal-weight additive
+
+**Every portfolio figure in this repo is read off one equal-weight book, and the
+archives and cards are written on that basis.** The rule, in full:
+
+- **Return** is the **mean of the N per-symbol returns** — additive, 1/N of
+  capital per symbol, nothing rebalanced. It is *never* the compounded product
+  `(Π (1+r_s) - 1)`, which is the return of a **5×-geared** book.
+- **Max drawdown** is the drawdown of the **pointwise-averaged equal-weight
+  equity curve**. It is *never* the worst single symbol, which is a 1×
+  single-sleeve figure.
+- **Calmar** is that return over that drawdown — both halves off the same curve,
+  so the units always match.
+
+It applies to `evidence.agg`, the benchmark, the per-regime benchmark and the v2
+bootstrap alike.
+
+**This is a bug fix, and the recorded v1 numbers were allowed to move as a
+result.** The previous basis compared a 5×-geared numerator against a 1×
+drawdown — mismatched units, which inflated the calmar criterion on every
+verdict in both v1 and v2. Because the drawdown half is now the *book's* and not
+the worst *sleeve's*, `max_drawdown_pct` reports a **smaller** number than the
+old worst-symbol figure on the same run. That is not a loosened threshold: it is
+the same `< 35%` bar applied to the thing the strategy actually deploys. The old
+figure is retained alongside it as `worstSymbolDrawdownPct` so both are readable.
+
+**A reader must therefore not mix pre- and post-change portfolio numbers**, and
+the archives have been regenerated to the new basis. As of 2026-09-28 this card's
+front-matter `total_return_pct` (−33.98) and `max_drawdown_pct` (54.55) are the
+**regenerated equal-weight figures for the same run**; the pre-regeneration
+values they replace were −99.61% and 83.97%. Nothing in this card's *finding*
+depends on them — the verdict is `fail` either way, and the argument rests on
+the profit-factor ladder and the trade counts, which are per-run quantities and
+are unaffected by the portfolio basis.
+
+`harness.monteCarlo` was converted on the same basis. It was a 5×-geared pooled
+replay: it compounded five independent 1,000-equity accounts into one curve with
+no 1/N weighting, so it could end at a **negative balance** and report
+**> 100%** "drawdowns" with no referent — a portfolio cannot be deeper than
+100% or, arithmetically, negative. It is now a **5-sleeve equal-weight book**:
+trades are grouped by their `symbol` field, each sleeve replays alone at 1/N,
+the sleeves are averaged pointwise, and a trade never migrates between sleeves
+(the shuffle is within-symbol only). A sleeve that runs out of capital absorbs
+its own loss, so the book can never report a drawdown above 100%.
 
 **The k ladder** (400d, 15m, 5 symbols; all arms ruin the account):
 
@@ -153,12 +266,12 @@ is what happened.
 | profit factor | > 1.3 | **0.935** |
 | sharpe | > 1.0 | −0.038 |
 | sharpe t-stat | > 2.0 | −1.93 |
-| max drawdown | < 35% | 83.97% |
+| max drawdown | < 35% | 54.55% |
 | max survivable cost | ≥ 25 bps | **0 bps** |
 | account survived | yes | **RUINED** |
 | beats hold in bull | required | **passed** |
 
-Buy&hold returned +696.23% over the same window. This returned −99.61%.
+Buy&hold returned +696.23% over the same window. This returned −33.98%.
 
 Two details worth keeping. The family sits at PF 0.90–0.96, which is *above* the
 random control (0.751) and above always-long (0.837) but below 1.0 — so the

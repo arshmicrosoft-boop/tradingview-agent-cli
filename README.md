@@ -219,16 +219,28 @@ estimate beside it.
 
 | strategy | trades | PF | Sharpe | t | maxDD% | return% | unmet | gate |
 |---|---|---|---|---|---|---|---|---|
-| sma-cross | 1984 | 1.013 | −0.023 | −1.02 | 82.8 | −99.4 | 20 | fail |
-| trend-pullback | 1557 | 0.972 | −0.016 | −0.63 | 82.6 | −99.3 | 19 | fail |
-| donchian | 1645 | 0.917 | −0.044 | −1.78 | 82.1 | −99.6 | 19 | fail |
-| vol-normalized-breakout ³ | 2583 | 0.935 | −0.038 | −1.93 | 84.0 | −99.6 | 19 | fail |
-| long-with-stop ¹ | 2278 | 0.837 | −0.028 | −1.34 | 83.0 | −99.8 | 20 | fail |
-| sweep-reversal | 1565 | 0.641 | −0.138 | −5.46 | 80.3 | −99.9 | 20 | fail |
-| vol-expansion | 686 | 0.691 | −0.076 | −1.99 | 80.0 | −95.2 | 20 | fail |
-| sideways-liquidity-reversal ² | 165 | 0.355 | −0.260 | −3.34 | 45.9 | −81.9 | 20 | fail |
-| *control: always long* | *2278* | *0.837* | *−0.028* | *−1.34* | *83.0* | *−99.8* | *20* | *fail* |
-| *control: random* | *2270* | *0.751* | *−0.057* | *−2.72* | *81.4* | *−99.9* | *21* | *fail* |
+| sma-cross | 1984 | 1.013 | −0.023 | −1.02 | 56.9 | −1.3 | 20 | fail |
+| trend-pullback | 1557 | 0.972 | −0.016 | −0.63 | 42.6 | −6.7 | 19 | fail |
+| donchian | 1645 | 0.917 | −0.044 | −1.78 | 56.2 | −28.8 | 19 | fail |
+| vol-normalized-breakout ³ | 2583 | 0.935 | −0.038 | −1.93 | 54.6 | −34.0 | 19 | fail |
+| long-with-stop ¹ | 2278 | 0.837 | −0.028 | −1.34 | 71.4 | −55.2 | 20 | fail |
+| sweep-reversal | 1565 | 0.641 | −0.138 | −5.46 | 71.8 | −71.5 | 20 | fail |
+| vol-expansion | 686 | 0.691 | −0.076 | −1.99 | 48.6 | −36.2 | 20 | fail |
+| sideways-liquidity-reversal ² | 165 | 0.355 | −0.260 | −3.34 | 27.6 | −27.2 | 19 | fail |
+| *control: always long* | *2278* | *0.837* | *−0.028* | *−1.34* | *71.4* | *−55.2* | *20* | *fail* |
+| *control: random* | *2270* | *0.751* | *−0.057* | *−2.72* | *74.3* | *−72.9* | *21* | *fail* |
+
+**These two columns were regenerated on 2026-09-28** and are on the current
+portfolio basis: N symbols are N equal-weight sub-accounts, `return%` is the
+**mean** of the per-symbol returns and `maxDD%` is the drawdown **of the averaged
+curve**. Both are far smaller in magnitude than the pre-regeneration figures
+they replace (e.g. `sma-cross` was −99.4% / 82.8%, now −1.3% / 56.9%), because the
+old numbers compared a 5×-geared compounded numerator against a 1× worst-single-
+symbol drawdown. The trading statistics beside them — trades, PF, Sharpe, t — are
+per-run quantities and did not move, and every row still reads `fail`. Pre- and
+post-regeneration records sit in the same archive under one protocol hash, so
+read the **latest** record per strategy; the older ones are retained history, not
+current results.
 
 ¹ `long-with-stop` is a strict duplicate of the `always long` control — same
 `{ side: "buy" }` on every flat bar, identical metrics. It is not a distinct
@@ -240,12 +252,14 @@ after de-clustering, the trailing-window statistic it was built on measured
 t = −1.38, not the +8.99 the raw overlapping samples claimed (AGENT.md §6.14).
 
 ³ `vol-normalized-breakout` (P-002) has the **fewest unmet criteria in the
-table — 19, tied with `trend-pullback` and `donchian` — and still fails.** That
-is the most informative row here. It is not a new trigger: the trigger is
-donchian's and the exit is the protocol's, and the only change is the denominator
-a price distance is divided by. Normalising the units of a breakout and changing
-the breakout both look like progress on a PF of 0.9. Neither is. (It was at 18
-before the walk-forward fix above; that fix cost it this one criterion.)
+table — 19, tied with `trend-pullback`, `donchian` and
+`sideways-liquidity-reversal` — and still fails.** That is the most informative
+row here. It is not a new trigger: the trigger is donchian's and the exit is the
+protocol's, and the only change is the denominator a price distance is divided by.
+Normalising the units of a breakout and changing the breakout both look like
+progress on a PF of 0.9. Neither is. (It was at 18 before the walk-forward fix
+above; that fix cost it this one criterion, and the fix was accepted rather than
+reverted — see defect 3.)
 
 **No demonstrated edge.** Sharpe −0.26 to −0.016 across ~11,000 trades is a large
 sample measuring approximately zero.
@@ -282,8 +296,14 @@ survival, and the benchmark comparisons. Five more are structural. A 1%-risk,
 10×-leverage envelope crossed with 1,000–2,600 trades drives any
 non-positive-expectancy stream through a 20% ruin circuit breaker almost
 regardless of the signal, so `maxDD < 35%`, `P(dd breach) < 25%`, `account
-survived` and `symbols ruined` were never going to pass. That is what produces
-the uniform 80–84% drawdowns.
+survived` and `symbols ruined` were never going to pass. That is what produces the
+large book drawdowns in the table. (The range is no longer uniform, and the 35%
+bar did not move: on the regenerated equal-weight basis the ten rows span
+**27.6–74.3%**, deepest being the `random` control; the eight *hypotheses* with a
+real sample span **42.6–71.8%**. The only row under the bar is
+`sideways-liquidity-reversal` at 27.6% — which has 165 trades and fails the ≥500
+minimum instead, so it never reaches the drawdown question. Under the superseded
+5×-geared / worst-symbol basis the same ten ran 80–84%.)
 
 **No threshold was moved to produce this**, and making it mean that took a fix.
 
@@ -322,10 +342,37 @@ the uniform 80–84% drawdowns.
    runner. The `MIN_WF` criterion was fed by an inline splitter that cut the
    pooled five-symbol trade stream into four chunks and scored each as
    `summedPnl / 1000` — five accounts' P&L divided by one account's equity, used
-   for nothing but its sign. Wiring in the tested implementation costs
-   `vol-normalized-breakout` one criterion (it now fails walk-forward
-   consistency: 18 → 19 unmet). That is the *only* change in the entire re-run,
-   and it moved in the strict direction.
+   for nothing but its sign. Wiring in the tested implementation runs it on the
+   primary symbol alone, with a per-fold warm-up: a different population *and* a
+   different denominator, one account divided by the equity actually traded.
+
+   **The measured effect.** The `walk-forward consistency %` **value** changed on
+   **7 of the 11** strategies. Only one crossed the bar, and it crossed
+   downward: `vol-normalized-breakout` went **50 → 0**, taking it from **18 → 19**
+   unmet criteria. The bar itself, `MIN_WF ≥ 50`, is **unchanged** — the old 50
+   and the new 0 are both real numbers measured two different ways, and only one
+   of them was ever the criterion.
+
+   **No overall verdict flipped anywhere.** Every one of the eleven strategies was
+   already `fail` on other criteria, so the change moved unmet counts and
+   nothing else. It also moved strictly in one direction: the old number was read
+   off a denominator with no referent, so it was free to pass, and the new one
+   can only lose a criterion, never win one back.
+
+   **The owner reviewed this and chose not to revert it.** The old 50 was a sign
+   test masquerading as a percentage — a strategy down −33.98% on the regenerated
+   equal-weight basis and ruined on 4 of its 5 symbols was handed a *passing* 50,
+   because the pooled splitter only asked whether the sum of five accounts' P&L
+   was positive in each fold, and it was: four losing accounts outnumbered one
+   losing account that lost less. Reverting would mean reinstating a meaningless
+   50 on a ruined book. `strategies/cards/tested/vol-normalized-breakout.md`
+   records the before/after table so the next reader does not "fix" it back.
+
+   Note that the protocol hash cannot see any of this: it covers **thresholds**,
+   not **computation**, so these values moved under an unchanged
+   `ab8d990e445b2927`. That limitation is documented, not redesigned — see the
+   "WHAT THE HASH ACTUALLY COVERS" blocks in `gate.mjs`, `evidence.mjs` and
+   `registry.mjs`.
 
 `npm run verify` now enforces the fourth thing: any v1 run citing a stale
 `protocol_hash` fails the build. A corrected hash function is indistinguishable
@@ -453,11 +500,33 @@ would otherwise make too.
    all of their fractional returns into one curve with no 1/N weighting. The
    symptom was arithmetically impossible as a portfolio statistic: pooled median
    drawdown **99.5%** when the *worst* single symbol was 80.6% and the best was
-   34.4%. An equal-weight book cannot be deeper than its worst component. Fixed
-   by resampling within each symbol (so blocks never straddle a boundary),
-   weighting 1/N, and replaying the merged events in time order. The selftest
-   pins it with five *identical* accounts, whose portfolio drawdown must equal
-   one account's.
+   34.4%. An equal-weight book cannot be deeper than its worst component.
+
+   The first fix over-corrected into a different wrong model: one shared account
+   of 1,000 running five symbols at 1/N of its equity each, P&L divided by N and
+   compounded into a single curve. That is a levered account, not a portfolio,
+   and it errs in **both** directions rather than conservatively — where symbols
+   draw down together it pays `(1 − x/N)^N` for N shocks of size `x` where the
+   real book pays `x`, and where one symbol's drawdown is offset by another's
+   gain in the same window the shared equity base flatters it. Measured on the
+   cached dataset (`vol-normalized-breakout`, 2,583 pooled trades, 500 block
+   resamples, seed 12345): the 1/N account reports a median portfolio drawdown of
+   **70.47%**, the equal-weight book **67.11%**, and the mean of the per-symbol
+   drawdowns **78.13%**.
+
+   **What it is now: equal-weight additive.** `bootstrapMonteCarlo` resamples
+   **within** each symbol (so a block never straddles a boundary), hands
+   `equalWeightPath` one leg per sub-account, and averages the N equity curves
+   pointwise. Total return is the mean of the per-symbol returns; drawdown is taken
+   on the averaged curve, which keeps the *ordering* of the paths — the only
+   thing a drawdown measures. Drawdowns are never summed, N full accounts are
+   never compounded into one, and events sharing a timestamp settle as one step so
+   an offsetting `+50%`/`−50%` pair cannot invent a mid-step peak. The mean of the
+   per-symbol drawdowns is still reported, as the diagnostic
+   `maxDrawdownP50PctComponentsMean`, so the difference from the book's own figure
+   is visible rather than asserted. `protocol.v2.json` carries the model, the
+   reasoning and both numbers. The selftest pins it with five *identical*
+   accounts, whose portfolio drawdown must equal one account's.
 
 3. **The deflated-Sharpe threshold contradicted the standard the code argues
    for.** `robustness.mjs` spends a paragraph explaining that the bar must be
@@ -529,14 +598,37 @@ and it says in one line what v1 takes twenty criteria to establish.
   re-optimise and the test reduces to v1's fold count. The run reports
   `reoptimised: false` with that explanation rather than letting the word
   "walk-forward" imply a search that never happened.
-- That `agg.totalReturnPct` is a portfolio return. It compounds the five symbols
-  **sequentially** (`(1+r₁)(1+r₂)…`), not as an equal-weight book. For
-  `sma-cross` the per-symbol returns are −80.1, −80.0, −80.1, −80.3 and +313.9,
-  so the sequential compound reports **−99.4%** where an equal-weight portfolio
-  made about −1.3%. This is pre-existing v1 behaviour, unchanged here because
-  changing it would move v1's recorded numbers and its card reconciliation; it
-  is called out because it is the same pooling error that *was* fixed in the v2
-  bootstrap, and the inconsistency between the two is real.
+
+**The portfolio basis is no longer on that list, because it was fixed.** It used
+to be an open inconsistency: `agg.totalReturnPct` compounded the five symbols
+**sequentially** (`(1+r₁)(1+r₂)…`) while `agg.maxDrawdownPct` reported the *worst
+single symbol* — a 5×-geared numerator over a 1× denominator, with no shared
+referent. For `sma-cross` that reported **−99.4%** return on an **82.8%**
+drawdown where the equal-weight book makes about **−1.3%** on **56.9%**, and
+`gate.mjs` then divided exactly those two numbers to get its calmar criterion.
+
+Every portfolio figure in the repo is now **equal-weight additive** and defined
+once: N symbols are N independent sub-accounts, the book equity at each step is
+the **arithmetic mean** of the N curves, total return is the **mean of the
+per-symbol returns** (never the product), and max drawdown is the drawdown **of
+that averaged curve** (never the worst sleeve, never the mean of the drawdowns,
+never a sum). It is implemented in `gate.mjs` (`equalWeightBook` /
+`equalWeightPath`), in `evidence.mjs` for `agg` and the benchmark, and in
+`robustness.mjs` for the v2 bootstrap, and the three are cross-checked against
+each other by selftest so they cannot drift apart. Calmar now divides a return
+and a drawdown read off the **same** curve, so its units always match. The old
+worst-symbol figure is still reported, as `worstSymbolDrawdownPct`, so both are
+readable.
+
+**The recorded v1 numbers were regenerated on 2026-09-28 on that equal-weight
+basis** — all 11 strategies, with the older records retained rather than
+overwritten — and the results table and the strategy cards were re-synced to
+match. This was a correctness fix, not a threshold change, and it was the right
+call even though it moved recorded numbers: a table that quoted a −99.4% return
+was quoting an artifact of a portfolio model that cannot exist. The residual
+limitation is that pre- and post-fix records share one protocol hash, so a
+leaderboard view can show duplicate rows; no gate uses the hash for promotion,
+and see the "WHAT THE HASH ACTUALLY COVERS" note in `registry.mjs`.
 
 The platform is the deliverable. All seven distinct tested hypotheses are
 falsified — plus P-001, killed at the measurement stage before a line of trading

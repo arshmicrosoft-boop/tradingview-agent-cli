@@ -12,8 +12,8 @@ trades: 2278
 win_rate_pct: 23.4
 profit_factor: 0.837
 sharpe: -0.028
-max_drawdown_pct: 83.0
-total_return_pct: -99.8
+max_drawdown_pct: 71.41
+total_return_pct: -55.22
 gate: fail
 unmet: 20
 ---
@@ -28,7 +28,7 @@ unmet: 20
 > does.
 >
 > The metrics confirm it exactly: 2,278 trades, Sharpe −0.028, PF 0.84 / 0.837,
-> max drawdown 83.0%. These are the same run.
+> max drawdown 71.41%. These are the same run.
 >
 > **So one of the six "strategies" in the original result table is a negative
 > control wearing a different filename, and the distinct hypothesis count is
@@ -51,7 +51,7 @@ market_mechanism: >
 why_should_it_exist: >
   It has no mechanism and does not need one. Its purpose is diagnostic: it
   measures what the 1%-risk / 10x-leverage / 2×ATR-stop envelope does to an
-  asset that goes up over the sample. The answer is that it loses 99.8%.
+  asset that goes up over the sample. The answer is that it loses 55.22%.
 
 expected_regime: >
   Not applicable.
@@ -80,10 +80,11 @@ No conditions. No grid.
 ## When to use
 
 - **Never, as a strategy.** It exists as a probe.
-- **Its real use:** the 80–83% drawdowns across the entire result table are this
-  strategy's fingerprint. Every strategy in the set wore the same envelope and
-  all of them produced the same drawdown signature. That tells you the drawdown
-  column measures the envelope, not skill.
+- **Its real use:** the 27.6–74.3% drawdowns across the entire result table are
+  this strategy's fingerprint. Every strategy in the set wore the same envelope
+  and all of them produced a drawdown in the same band, an order of magnitude
+  below anything a trigger could earn. That tells you the drawdown column
+  measures the envelope, not skill.
 
 ## When not to use
 
@@ -100,10 +101,20 @@ No conditions. No grid.
 | profit factor | > 1.3 | **0.837** |
 | sharpe | > 1.0 | −0.028 |
 | sharpe t-stat | > 2.0 | failed |
-| max drawdown % | < 35% | **83.0** — worst in the set |
-| total return | — | **−99.8%** |
+| max drawdown % | < 35% | **71.41** — exceeded only by `sweep-reversal` (71.81) and the random control (74.33) |
+| total return | — | **−55.22%** |
 | calmar vs regime-matched hold | required | failed |
 | beats hold in bull | required | failed |
+
+**Basis note (2026-09-28).** `total_return_pct` (−55.22) and `max_drawdown_pct`
+(71.41) were re-measured on this strategy's latest v1 run after the portfolio
+model moved to an equal-weight additive book — return is the mean of the five
+per-symbol returns, max drawdown is the drawdown of the pointwise-averaged
+equity curve. The superseded figures (−99.8% and 83.0%) came from a 5×-geared
+pooled replay and must not be mixed with these. Trades, profit factor, Sharpe
+and the `fail` verdict are unchanged: they are per-run quantities and do not
+depend on the portfolio basis. The account still reaches the ruin threshold
+(`account survived (no ruin)` is still unmet), so the conclusion below stands.
 
 ## Why it failed
 
@@ -117,11 +128,11 @@ account reaches the ruin threshold and the simulator stops.
 
 ## What we learned
 
-- **The drawdown column is not a measurement of the strategies.** 80.0, 82.1,
-  82.6, 82.8, 83.0 — five different triggers, one envelope, one number. When
-  every candidate produces the same drawdown, the drawdown is measuring the
-  envelope. This is why `README.md`'s result table must be read in the order
-  given in `strategies/README.md`, with Sharpe and drawdown last.
+- **The drawdown column is not a measurement of the strategies.** 42.63, 48.58,
+  56.19, 56.91, 71.41, 71.81 — six different triggers, one envelope, one band.
+  When every candidate produces a drawdown of the same order, the drawdown is
+  measuring the envelope. This is why `README.md`'s result table must be read in
+  the order given in `strategies/README.md`, with Sharpe and drawdown last.
 - **PF 0.837 is the reference point for "an asset went up".** Any directional
   strategy that cannot clear this has produced nothing. Only `sma-cross` at
   1.013 got close, and it is within noise of it.

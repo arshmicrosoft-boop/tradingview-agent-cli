@@ -122,35 +122,97 @@ check("every strategy exports a signal function", bad.length === 0, bad.join("; 
 // The v2 results archive must stay separate. If a v2 run could end up in the v1
 // leaderboard, "best challenger" would rank numbers produced under two
 // different frozen protocols, which is not a comparison.
+// A record is well-formed only if `ts` is a string that round-trips through
+// Date — i.e. it really is the `new Date().toISOString()` that registry.record
+// stamps, not a number, not a locale string, not an invented value. Comparing
+// to the re-serialised form rejects all of those in one test.
+const isIsoTs = (v) => typeof v === "string" && v !== ""
+  && !Number.isNaN(new Date(v).getTime()) && new Date(v).toISOString() === v;
+const present = (v) => typeof v === "string" && v.trim() !== "";
+
+// Reads one archive directory into records plus a parallel array of
+// "<dir>:line" locations, so a failing check can name the offending record
+// instead of only counting. The location is NOT attached to the record: these
+// objects are the ones the hash checks below read, and they should stay
+// exactly the bytes the archive holds.
+const loadArchive = (archiveName) => {
+  const dir = join(ROOT, "research", archiveName);
+  const recs = [], at = [];
+  for (const e of readdirSync(dir)) {
+    const f = join(dir, e, "runs.jsonl");
+    if (!existsSync(f)) continue;
+    readFileSync(f, "utf8").split("\n").filter(Boolean)
+      .forEach((l, i) => { recs.push(JSON.parse(l)); at.push(e + ":" + (i + 1)); });
+  }
+  return { recs, at };
+};
+
+// Deterministic latest-per-strategy selection.
+//
+// The earlier form was `if (!cur || r.ts > cur.ts)`, which has two degenerate
+// shapes. A record with a MISSING or unparseable `ts` never wins the `>` and is
+// therefore never selected as latest, so a hand-appended record escapes the
+// per-strategy hash check entirely; and two records that tie on `ts` resolve to
+// whichever was read first, which is directory order rather than evidence. Both
+// are silent passes on tampered input.
+//
+// This version makes the choice total and reproducible: the newest `ts` wins,
+// and a tie is broken by archive position (a later line is a later append), so
+// the result never depends on readdir order. A tie is still not evidence of
+// anything, so it is reported by the well-formedness check below rather than
+// quietly resolved in favour of one record.
+const latestPerStrategy = (recs) => {
+  const by = new Map();
+  recs.forEach((r, i) => {
+    const cur = by.get(r.strategy_id);
+    const newer = !cur
+      || (isIsoTs(r.ts) && isIsoTs(cur.ts)
+          ? r.ts > cur.ts || (r.ts === cur.ts && i > cur.i)
+          : i > cur.i);
+    if (newer) by.set(r.strategy_id, { ...r, i });
+  });
+  return by;
+};
+
 const v2Archive = join(ROOT, "research", "registry-v2");
-if (existsSync(v2Archive)) {
-  const v2Dirs = readdirSync(v2Archive).filter((e) => e !== "state.json");
-  const v2Runs = v2Dirs
-    .filter((e) => existsSync(join(v2Archive, e, "runs.jsonl")))
-    .flatMap((e) => readFileSync(join(v2Archive, e, "runs.jsonl"), "utf8")
-      .split("\n").filter(Boolean).map((l) => JSON.parse(l)));
+  if (existsSync(v2Archive)) {
+    const v2Loaded = loadArchive("registry-v2");
+    const v2Runs = v2Loaded.recs;
   const { PROTOCOL, PROTOCOL_V2 } = await import(pathToFileURL(join(ROOT, "research", "protocol.mjs")).href);
-  check("v2 runs never carry the v1 protocol hash",
-    v2Runs.length === 0 || v2Runs.every((r) => r.protocol_hash === PROTOCOL_V2.protocol_hash),
-    `${v2Runs.length} v2 runs, all on ${PROTOCOL_V2.protocol_hash}`);
+  // Same rule as the v1 check below, applied to v2: the LATEST v2 run per
+  // strategy must cite the current v2 hash, and no v2 run may carry the v1
+  // hash. Older v2 records are allowed to cite older v2 hashes — a re-run
+  // appends, so the archive is the trail of what was actually measured.
+  //
+  // The previous form was `v2Runs.every((r) => r.protocol_hash ===
+  // PROTOCOL_V2.protocol_hash)`, which demands EVERY retained record carry the
+  // CURRENT v2 hash. That can never pass once any history exists: the 11 runs
+  // archived 2026-09-27 legitimately cite the older v2 hash
+  // 38af9ecab50361fa, so a fully-correct re-run still failed this check. The
+  // v1 side of this file had already been fixed to the latest-per-strategy
+  // rule; this brings v2 in line. The old detail string also printed
+  // PROTOCOL_V2.protocol_hash unconditionally, so it read "all on <current>"
+  // even when the archive disagreed — which is why the failure was confusing.
+  const v2ByStrategy = latestPerStrategy(v2Runs);
+  const v2Stale = [...v2ByStrategy.values()].filter((r) => r.protocol_hash !== PROTOCOL_V2.protocol_hash);
+  const v2CarriesV1 = v2Runs.filter((r) => r.protocol_hash === PROTOCOL.protocol_hash);
+  check("v2 runs never carry the v1 protocol hash; latest v2 run per strategy cites the current v2 hash",
+    v2Runs.length === 0 || (v2CarriesV1.length === 0 && v2Stale.length === 0),
+    v2CarriesV1.length ? `${v2CarriesV1.length} v2 record(s) wrongly carry the v1 hash`
+      : v2Stale.length ? `${v2Stale.map((r) => r.strategy_id).join(", ")} - re-run npm run research:all:v2`
+      : `${v2ByStrategy.size} strategies current, ${v2Runs.length} total v2 records in the archive`);
   check("v1 and v2 protocol hashes are distinct",
     PROTOCOL.protocol_hash !== PROTOCOL_V2.protocol_hash,
     `v1 ${PROTOCOL.protocol_hash} / v2 ${PROTOCOL_V2.protocol_hash}`);
-  const v1Runs = readdirSync(join(ROOT, "research", "registry"))
-    .filter((e) => existsSync(join(ROOT, "research", "registry", e, "runs.jsonl")))
-    .flatMap((e) => readFileSync(join(ROOT, "research", "registry", e, "runs.jsonl"), "utf8")
-      .split("\n").filter(Boolean).map((l) => JSON.parse(l)));
+  const v1Loaded = loadArchive("registry");
+  const v1Runs = v1Loaded.recs;
   // The LATEST run per strategy must cite the current hash. Older records are
   // allowed to cite older hashes, and should be: a re-run appends rather than
   // overwrites, so the archive is the trail of what was actually measured and
   // when. Pruning stale records because a hash function was corrected would
   // destroy the evidence the hash exists to provide — the old records are the
   // proof that the old (broken) hash was in use.
-  const byStrategy = new Map();
-  for (const r of v1Runs) {
-    const cur = byStrategy.get(r.strategy_id);
-    if (!cur || r.ts > cur.ts) byStrategy.set(r.strategy_id, r);
-  }
+  const byStrategy = latestPerStrategy(v1Runs);
   const stale = [...byStrategy.values()].filter((r) => r.protocol_hash !== PROTOCOL.protocol_hash);
   check("the latest v1 run per strategy cites the current v1 protocol hash", stale.length === 0,
     stale.length ? `${stale.map((r) => r.strategy_id).join(", ")} — re-run npm run research:all`
@@ -164,6 +226,46 @@ if (existsSync(v2Archive)) {
     superseded > 0
       ? `${superseded} historical record(s) kept alongside the current ones`
       : "every v1 record cites the current hash — history has been overwritten, which is what a rewrite would look like");
+
+  // The tamper-evidence the hash checks above rest on. Those checks decide which
+  // record is "the latest run per strategy" and then assert that record cites
+  // the current hash. A hand-edited or hand-appended record is only caught if
+  // it actually gets selected — so selection is only sound if every record
+  // carries a usable `ts` and `strategy_id`. Neither is a formality:
+  //
+  //   - a record with a missing or unparseable `ts` loses the `>` comparison
+  //     and is never selected, so its protocol_hash is never examined at all;
+  //   - a record with no `strategy_id` is filed under `undefined` and compared
+  //     against every other unfiled record rather than against its own history;
+  //   - two records for one strategy sharing a `ts` make "latest" a coin flip,
+  //     so the archive no longer says what order things happened in.
+  //
+  // `registry.record` always stamps `new Date().toISOString()` and a real
+  // strategy_id, so none of this is reachable through the normal writer. It is
+  // reachable by hand, which is precisely the case a tamper-evidence check
+  // exists for: this must FAIL LOUDLY on malformed input, not quietly pass.
+  const malformed = [];
+  const ambiguous = [];
+  for (const [label, { recs, at }] of [["v1", v1Loaded], ["v2", v2Loaded]]) {
+    const seen = new Map();
+    recs.forEach((r, i) => {
+      const where = at[i];
+      if (!isIsoTs(r.ts)) malformed.push(`${label} ${where} ts=${JSON.stringify(r.ts)}`);
+      if (!present(r.strategy_id)) malformed.push(`${label} ${where} strategy_id=${JSON.stringify(r.strategy_id)}`);
+      if (isIsoTs(r.ts) && present(r.strategy_id)) {
+        const k = r.strategy_id + "|" + r.ts;
+        if (seen.has(k)) ambiguous.push(`${label} ${r.strategy_id} ts=${r.ts} (${seen.get(k)} and ${where})`);
+        else seen.set(k, where);
+      }
+    });
+  }
+  check("every archived v1 and v2 record has a parseable ISO-8601 ts and a strategy_id, with no per-strategy ts ties",
+    malformed.length === 0 && ambiguous.length === 0,
+    malformed.length
+      ? `${malformed.length} malformed record(s): ${malformed.slice(0, 3).join("; ")}${malformed.length > 3 ? " ..." : ""}`
+      : ambiguous.length
+      ? `${ambiguous.length} ambiguous ts tie(s): ${ambiguous.slice(0, 3).join("; ")}${ambiguous.length > 3 ? " ..." : ""}`
+      : `${v1Runs.length + v2Runs.length} records (${v1Runs.length} v1 + ${v2Runs.length} v2) carry a well-formed ts and strategy_id`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

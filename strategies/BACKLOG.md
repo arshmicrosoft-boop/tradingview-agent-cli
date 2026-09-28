@@ -14,9 +14,9 @@ Cards: [`cards/proposed/`](./cards/proposed/) · Code: `research/strategies/`
 
 | # | hypothesis | status | mechanism in one line | expected trades | notes |
 |---|---|---|---|---|---|
-| [P-001](./cards/proposed/serial-correlation-sign-flip.md) | serial-correlation sign flip | **queued** | the sign of short-horizon autocorrelation is state-dependent, so the trade must flip with it | ~1,500 | The one that attacks an assumption we never varied |
-| [P-002](./cards/proposed/vol-normalized-breakout.md) | volatility-normalized breakout | **queued** | thresholds measured in ATR units mean the same thing in a 10%-vol week and a 100%-vol week | ~1,200 | Measurement representation, not a new indicator |
-| [P-003](./cards/proposed/selectivity-on-falsified-trigger.md) | selectivity on a falsified trigger | **queued** | fixed triggers earn nothing per trade; the same signal filtered to high-information states may | ~600 | Diagnostic: separates "bad trigger" from "traded too much" |
+| [P-001](./cards/proposed/serial-correlation-sign-flip.md) | serial-correlation sign flip | **falsified** | the sign of short-horizon autocorrelation is state-dependent, so the trade must flip with it | ~1,500 | Killed at the measurement stage — never implemented |
+| [P-002 → T-008](./cards/tested/vol-normalized-breakout.md) | volatility-normalized breakout | **falsified** | thresholds measured in ATR units mean the same thing in a 10%-vol week and a 100%-vol week | ~1,200 | Implemented, renumbered T-008, run under v1 |
+| [P-003](./cards/proposed/selectivity-on-falsified-trigger.md) | selectivity on a falsified trigger | **queued** | fixed triggers earn nothing per trade; the same signal filtered to high-information states may | ~600 | Diagnostic: separates "bad trigger" from "traded too much". See the note below — this status is stale |
 | [P-004](./cards/proposed/weekend-liquidity-reversal.md) | weekend liquidity-window reversal | proposed | thin-book weekend moves overshoot, then revert when makers requote | ~800 | Highest overfit risk in the set. Test last |
 | [P-005](./cards/proposed/cross-sectional-relative-value.md) | cross-sectional relative value | **blocked** | majors are correlated but not perfectly; relative moves decay | n/a | Needs a v2 harness. Strongest candidate in this list |
 | [P-006](./cards/proposed/funding-basis-crowding.md) | funding/basis crowding | **blocked** | crowded perp positioning unwinds when funding is extreme | n/a | Needs funding + open interest. v2 data |
@@ -28,9 +28,23 @@ Cards: [`cards/proposed/`](./cards/proposed/) · Code: `research/strategies/`
 [`cards/controls/`](./cards/controls/). A new card has to clear 1.3, which is
 0.45 of profit factor above a coin flip.
 
+**State of the board, 2026-09-27.** Three of the six cards below have been
+measured. P-001 and P-002 (now T-008) are `falsified` and the rows say so. P-003
+was run as a diagnostic, its RESULT is on the card, and its `status: queued` is
+therefore stale — it is still shown as queued because changing that status is a
+research decision, not a repo-hygiene one. **P-004 is the highest-ranked card
+that has never been run.**
+
+Note what the measured cards have in common with each other and not with P-003:
+P-001 and P-002 were implemented as strategies, so they were renumbered `T-`
+and filed in [`cards/tested/`](./cards/tested/); P-003 was deliberately run
+*outside* `research/strategies/` so it could never be gated, so it kept its `P-`
+id and stayed in `cards/proposed/`. A `falsified` card in `cards/proposed/` is
+not a contradiction — see [`README.md`](./README.md#the-directory-is-the-duty-status-is-the-verdict).
+
 ---
 
-## P-001 — serial-correlation sign flip · **do this one next**
+## P-001 — serial-correlation sign flip · **closed, falsified**
 
 **The hole in our experiment design.** Five of six strategies were long-only;
 the sixth was short-only. We varied the trigger five times and the *sign* zero

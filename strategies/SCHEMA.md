@@ -49,6 +49,30 @@ that a card stays readable as plain text.
 marked `blocked` is a documented v2 requirement, and it carries more information
 than an untested card.
 
+### `status` is the verdict; the directory is not
+
+`falsified`, `promoted` and `blocked` are recorded in the front matter of a card
+sitting in `cards/proposed/`, `cards/tested/` or `cards/controls/`. **There is no
+`cards/falsified/` directory, by design** — 11 of the 15 cards are falsified, so
+such a directory would hold most of the base and say nothing the `status` field
+does not already say.
+
+The directory is load-bearing in `validate.mjs`, and it is load-bearing for what
+it *means*, not for the verdict:
+
+| directory | duty it assigns the linter | expected `status` values |
+|---|---|---|
+| `cards/proposed/` | hypothesis and rules sections only | `proposed`, `queued`, `blocked`, `falsified` |
+| `cards/tested/` | + result keys, a `code` path, and reconciliation against `research/registry/*/runs.jsonl` | `falsified` or `promoted` — **never `tested`**, which is not a status |
+| `cards/controls/` | same as `tested/` | `falsified` — a control that passed would be a bug |
+
+So a card is renamed `P-00n` → `T-00n` and moved into `cards/tested/` at the
+moment it becomes a strategy with a run record, and a card that was killed
+before any strategy was written keeps its `P-` id, stays in `cards/proposed/`,
+and carries `status: falsified` plus a `## Why it failed` section. Two cards
+already work that way: P-001 and P-003. See the "directory is the duty" section
+of [`README.md`](./README.md) for why the alternative was rejected.
+
 ---
 
 ## The hypothesis block

@@ -22,7 +22,8 @@ This directory is the memory. The gate is the judge. Neither replaces the other.
       ↓
 4. TEST        npm run research:all   — frozen protocol v1, no exceptions
       ↓
-5. RECORD      card moves to cards/tested/, result and verdict written down
+5. RECORD      card moves to cards/tested/ and is renumbered P-00n -> T-00n,
+               because it now carries run data. The verdict goes in `status:`.
       ↓
 6. PROMOTE     only if the gate says pass. That has never happened.
 ```
@@ -45,7 +46,14 @@ does not get implemented, no matter how good the backtest looked.
 | Queued, representable under v1 | **1** — P-003 |
 | Written, lowest priority | **1** — P-004 |
 | Blocked on protocol v2 | **2** — P-005, P-006 |
-| Next one | **P-003** — selectivity on a falsified trigger |
+| Next one | **P-003** — selectivity on a falsified trigger — *stale, see below* |
+
+*P-003 was run on 2026-09-27 as a diagnostic and its RESULT is recorded on the
+card, so its `status: queued` and `registry.json`'s `next: "P-003"` are both out
+of date. Neither has been changed here: re-pointing the queue is a research
+decision, not a hygiene one, and P-003's own conclusion — that it could not answer
+its question as specified — does not map cleanly onto `queued` or `falsified`.
+That is the one open item in the card-state model.*
 
 ### The protocol hash, and the defect that made it a fiction
 
@@ -141,10 +149,50 @@ strategies/
   registry.json      machine-readable index, consumed by validate.mjs
   validate.mjs       card linter — run by `npm run verify`
   cards/
-    proposed/        written, not yet implemented. The frontier  (5 cards)
-    tested/          run under v1, verdict recorded             (8 cards)
-    controls/        negative controls — no possible edge, by construction (2 cards)
+    proposed/        written, never implemented as a strategy. The frontier (5)
+    tested/          run under v1, reconciled against the run archive    (8)
+    controls/        negative controls — no possible edge, by construction (2)
 ```
+
+### The directory is the duty, `status` is the verdict
+
+**The directory records what was done to a card. `status:` records what the
+evidence concluded.** They are different axes. T-001 carries `status: falsified`
+and lives in `cards/tested/`, which reads like a contradiction and is not one: it
+was run under v1, and it failed. Both facts are recorded, in the two places that
+can record them.
+
+| directory | means | statuses actually found there |
+|---|---|---|
+| `cards/proposed/` | never written as a gated strategy | `proposed`, `queued`, `blocked`, `falsified` |
+| `cards/tested/` | run under v1, numbers reconciled against `research/registry/*/runs.jsonl` | `falsified` — 8 of 8 |
+| `cards/controls/` | a negative control, no possible edge by construction | `falsified` — 2 of 2 |
+
+**There is deliberately no `cards/falsified/` directory, and adding one would cost
+more than it buys.** `falsified` is a verdict, and 11 of the 15 cards carry it;
+a directory holding 73% of the base, beside three directories holding the rest,
+tells you nothing you cannot read off the front matter. It would also break three
+things that are load-bearing:
+
+- `validate.mjs` keys the id prefix on the directory (`T` must live in `tested/`),
+  so all eight `T-` cards would start failing the linter.
+- the result keys and the reconciliation against
+  `research/registry/<dir>/<slug>/runs.jsonl` are keyed on the directory too, so
+  a moved card would silently stop being checked against its own run — the one
+  check that makes a number written on a card worth reading.
+- `cards/tested/` would be left **empty**, because no card has ever passed. A
+  directory called "tested" holding nothing, with eleven falsified cards filed
+  elsewhere, inverts the meaning of the only word in its name.
+
+What the repo already does is consistent, and it predates this note. A card is
+renumbered `P-00n` → `T-00n` and moved into `cards/tested/` **at the moment it
+becomes a strategy with a run record** — see the header of
+[T-008](./cards/tested/vol-normalized-breakout.md), which was `P-002`. P-001 and
+P-003 were measured without ever becoming strategies, so they keep a `P-` id,
+stay in `cards/proposed/`, and carry a verdict of their own. `AGENT.md` says the
+same thing from the other end: a strategy "is then falsified or promoted
+automatically by `npm run research`" — the machine writes `status:`, and nothing
+in this repo moves files.
 ---
 
 ## How to add a hypothesis

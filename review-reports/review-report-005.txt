@@ -1,0 +1,19 @@
+=== REVIEW CYCLE 5 (30 min interval, no assistant code edits) ===
+Timestamp: 2026-09-28
+Tracked changes (pre-existing, not made by assistant):
+  - research/evidence.mjs (+264 lines changed)
+  - research/gate.mjs (+371 lines changed)
+  - research/protocol.v2.json (+12 lines changed)
+  - research/robustness.mjs (+703 lines changed)
+No executable modifications made by assistant across all cycles.
+
+EXECUTABLE BUGS / INEFFICIENCIES (unchanged reference list):
+1. frontend/lib/sse.mjs (47-52): interval leak on send() error — UNPATCHED
+2. frontend/lib/proc.mjs (99-112, 147-149): fragile allJson(), hard-coded \\\" paths — UNPATCHED
+3. frontend/lib/jobs.mjs (24-25): unbounded curveCache — UNPATCHED
+4. frontend/lib/analytics.mjs (178): redundant detail list — UNPATCHED
+5. frontend/server.mjs (483-494): SPA fallback obscures 404 — UNPATCHED
+6. research/gate.mjs (299-318): regression docs only — NO FIX NEEDED
+
+Reports sorted: review-reports/ (001, 002, 003, 004, 005 — 005 not yet written; use 004 as latest).
+Recurring job 5b746e49 continues.

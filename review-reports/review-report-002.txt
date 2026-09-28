@@ -1,0 +1,14 @@
+=== REVIEW CYCLE 2 (30 min interval, no code changed) ===
+Timestamp: 2026-09-28
+Tracked changes since cycle 1: strategies/BACKLOG.md, strategies/README.md, strategies/SCHEMA.md (docs only — no executable bugs)
+
+BUGS / INEFFICIENCIES (re-confirmed, unchanged, no fixes applied):
+1. frontend/lib/sse.mjs (47-52): send() deletes client but never calls cleanup() on error → ping interval leaks.
+2. frontend/lib/proc.mjs: allJson() rest slicing fragile; path_() hard-codes \\\
+ (Windows dependency).
+3. frontend/lib/jobs.mjs: curveCache is unbounded Map (memory growth over long sessions).
+4. research/gate.mjs (299-318): well-documented past regression (benchmark comparison fixed, comments preserved).
+5. frontend/lib/analytics.mjs (178): redundant core-check duplication in detail list (harmless).
+6. frontend/server.mjs (483-494): SPA fallback obscures 404 logic.
+
+No executable code modified. Recurring job 5b746e49 active.

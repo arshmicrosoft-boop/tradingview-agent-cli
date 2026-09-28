@@ -1,0 +1,28 @@
+=== INITIAL REVIEW REPORT (no code changed) ===
+
+Files scanned: frontend/lib/*.mjs, research/*.mjs, research/strategies/*.mjs, package.json, docs/*
+
+BUGS / INEFFICIENCIES FOUND:
+
+1. frontend/lib/sse.mjs (line 47-52):
+   send() deletes client from clients set on write error but never calls cleanup(),
+   leaving the 15s ping interval running forever (interval leak).
+
+2. frontend/lib/proc.mjs (allJson):
+   rest.slice(at + 1) advances past the '{' but skips nested documents incorrectly;
+   could miss multiple JSON objects if they are nested. path_() uses hard-coded \\\
+ for Windows.
+
+3. frontend/lib/jobs.mjs (curveCache):
+   Memory-unbounded Map; no eviction, grows forever in long sessions.
+
+4. research/gate.mjs (line 321-336): per-regime benchmark comparison uses pooledEquity = eqBase * nSymbols
+   correctly now (fixed from previous bug), but the doc comments explain a past regression clearly.
+
+5. frontend/lib/analytics.mjs (line 178): detail list may include duplicate core checks
+   in some branches (redundant but harmless).
+
+6. frontend/server.mjs (line 483-494): serveStatic falls back to index.html for ALL unknown paths,
+   which is correct SPA behavior, but 404 logic is slightly obscured.
+
+No code modified. Recurring review scheduled every 30 minutes (job 5b746e49).

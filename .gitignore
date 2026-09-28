@@ -12,6 +12,11 @@ config/audit.jsonl
 # Derived index over research/registry/*/runs.jsonl — rebuilt by registry.mjs.
 research/registry/state.json
 
+# v2 archive's derived index. Out of git for the same reason as v1's: it is a
+# rebuildable index over tracked run records. The v2 run records themselves
+# (research/registry-v2/*/runs.jsonl) ARE tracked, because they are evidence.
+research/registry-v2/state.json
+
 # Written by the agent harness; the setup prompt in README.md generates it.
 .claude/settings.local.json
 

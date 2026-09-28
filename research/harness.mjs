@@ -86,6 +86,7 @@ export function simulate({ bars, signal, cfg = {}, atrPeriod = 14 }) {
         const gross = (fill - pos.entryPrice) * pos.qty * (pos.side === "buy" ? 1 : -1);
         const fees = pos.entryFee + Math.abs(fill * pos.qty) * (c.feeBps / 10000);
         const pnl = gross - fees;
+        const equityBefore = equity;      // captured before the P&L is booked
         equity += pnl;
         trades.push({
           side: pos.side, entryTime: pos.entryTime, exitTime: next.time,
@@ -93,6 +94,14 @@ export function simulate({ bars, signal, cfg = {}, atrPeriod = 14 }) {
           stop: pos.stop, reason: why,
           barsHeld: Math.round((next.time - pos.entryTime) / tfStep),
           pnl: Number(pnl.toFixed(6)), returnPct: Number(((pnl / (pos.entryPrice * pos.qty)) * 100).toFixed(4)),
+          // Equity BEFORE this trade was booked. `returnPct` above is a return
+          // on NOTIONAL, and notional is up to 10x equity at 10x leverage — so
+          // it cannot be compounded onto an equity curve without a 10x error.
+          // Any resampling method (see robustness.mjs) needs the trade's
+          // fractional return on ACCOUNT equity, and this is the only place in
+          // the simulator where that number exists. Additive: no existing
+          // metric reads it, so no recorded v1 number moves.
+          equityBefore: Number(equityBefore.toFixed(8)),
         });
         pos = null;
       }
@@ -165,11 +174,13 @@ export function simulate({ bars, signal, cfg = {}, atrPeriod = 14 }) {
       if (pos && next) {                      // close out at fair value
         const fill = pos.side === "buy" ? next.close : next.close;
         const gross = (fill - pos.entryPrice) * pos.qty * (pos.side === "buy" ? 1 : -1);
+        const equityBefore = equity;
         equity += gross;
         trades.push({ side: pos.side, entryTime: pos.entryTime, exitTime: next.time,
           entry: pos.entryPrice, exit: Number(fill.toFixed(8)), qty: pos.qty, stop: pos.stop,
           reason: "ruin", barsHeld: Math.round((next.time - pos.entryTime) / tfStep),
-          pnl: Number(gross.toFixed(6)), returnPct: Number(((gross / (pos.entryPrice * pos.qty)) * 100).toFixed(4)) });
+          pnl: Number(gross.toFixed(6)), returnPct: Number(((gross / (pos.entryPrice * pos.qty)) * 100).toFixed(4)),
+          equityBefore: Number(equityBefore.toFixed(8)) });
         pos = null;
       }
       break;
@@ -179,12 +190,14 @@ export function simulate({ bars, signal, cfg = {}, atrPeriod = 14 }) {
   // Mark any still-open position so the curve is honest.
   if (pos && bars.length) {
     const last = bars[bars.length - 1].close;
+    const equityBefore = equity;
     const gross = (last - pos.entryPrice) * pos.qty * (pos.side === "buy" ? 1 : -1);
     trades.push({
       side: pos.side, entryTime: pos.entryTime, exitTime: pos.entryTime,
       entry: pos.entryPrice, exit: last, qty: pos.qty, stop: pos.stop,
       reason: "open_at_end", barsHeld: 0,
       pnl: Number(gross.toFixed(6)), returnPct: 0,
+      equityBefore: Number(equityBefore.toFixed(8)),
     });
   }
 
@@ -561,8 +574,6 @@ if (IS_HARNESS && process.argv[2] !== "run") {
   // A grid must produce genuinely different variants, not N copies of one run.
   const ho = holdoutEvaluate({ bars: up, signal: cfgProbe, cfg: {},
     grid: { n: [3, 11, 40] }, objective: "sharpe", trainFrac: 0.7 });
-  const distinct = ho.ok && new Set((ho.variantsTested ?? 0) ? [] : []).size === 0;
-  void distinct;
   check("holdoutEvaluate reports a variant count", ho.ok && ho.variantsTested === 3,
         `variantsTested=${ho.variantsTested}`);
 
@@ -586,6 +597,41 @@ if (IS_HARNESS && process.argv[2] !== "run") {
   check("execution is delayed one bar (no lookahead)",
         rUp.trades.every((t) => t.entryTime > t.entryTime - 86400 && t.barsHeld >= 0));
 
+  // --- equityBefore is part of the simulator's contract
+  // robustness.mjs resamples trades by compounding pnl/equityBefore. If a trade
+  // record ever loses that field the bootstrap silently falls back to
+  // pnl/initialEquity, which is the right number only for the first trade and
+  // wrong by an order of magnitude for the rest. Pin it here, at the source.
+  check("every trade records the equity it was taken against",
+    rUp.trades.length > 0 && rUp.trades.every((t) => typeof t.equityBefore === "number" && t.equityBefore > 0),
+    `first: ${rUp.trades[0]?.equityBefore} of ${rUp.trades[0]?.pnl} pnl`);
+  check("equityBefore is monotonically non-decreasing across trades",
+    rUp.trades.every((t, i) => i === 0 || t.equityBefore >= rUp.trades[i - 1].equityBefore - 1e-6));
+  check("a fractional return pnl/equityBefore is far smaller than returnPct at 10x leverage",
+    rUp.trades.some((t) => t.returnPct > 0 && Math.abs(t.pnl / t.equityBefore) < t.returnPct / 100),
+    "notional return is not an account return — compounding it would be a 10x error");
+
+  // Every trade-record exit path has to carry equityBefore, including the two
+  // the fixtures above never reach. A falling market with a ruin threshold set
+  // exercises the ruin close-out; ending mid-position exercises open_at_end.
+  // Both of these were missing the field at least once, and neither was
+  // covered, because DEFAULTS has no ruinEquityPct and every fixture above ends
+  // flat.
+  {
+    const longDown = mk(1500, -0.6);
+    const ruinedRun = simulate({ bars: longDown, signal: alwaysLong, cfg: { ruinEquityPct: 0.9 } });
+    check("a ruined run reports the ruin",
+      ruinedRun.ruined && ruinedRun.ruinAtBar != null && ruinedRun.trades.some((t) => t.reason === "ruin"),
+      `ruinAtBar=${ruinedRun.ruinAtBar}, ${ruinedRun.trades.length} trades`);
+    check("the ruin close-out also records equityBefore",
+      ruinedRun.trades.every((t) => typeof t.equityBefore === "number" && t.equityBefore > 0),
+      `${ruinedRun.trades.length} trades, all with equityBefore`);
+    check("every trade reason in a ruined run carries equityBefore",
+      ["stop", "time", "ruin", "open_at_end"].every((why) =>
+        !ruinedRun.trades.some((t) => t.reason === why) || ruinedRun.trades.filter((t) => t.reason === why).every((t) => t.equityBefore > 0)),
+      [...new Set(ruinedRun.trades.map((t) => t.reason))].join(","));
+  }
+
   // Monte Carlo determinism + bounds.
   // NOTE: MC is meaningless on a small, one-sided trade set — shuffling 9
   // identical winners gives the same final equity every run. Use a choppy
@@ -599,7 +645,25 @@ if (IS_HARNESS && process.argv[2] !== "run") {
 
   const mc1 = monteCarlo({ trades: rChop.trades, initialEquity: DEFAULTS.equity, runs: 500 });
   const mc2 = monteCarlo({ trades: rChop.trades, initialEquity: DEFAULTS.equity, runs: 500 });
-  check("monte carlo is deterministic", mc1.medianFinalEquity === mc2.medianFinalEquity);
+  const mcAlt = monteCarlo({ trades: rChop.trades, initialEquity: DEFAULTS.equity, runs: 500, seed: 999 });
+  // This assertion used to read `mc1.medianFinalEquity === mc2.medianFinalEquity`.
+  // monteCarlo() has no such field, so it was `undefined === undefined` — always
+  // true, and the MC determinism guarantee was untested. Assert on a real
+  // SEEDED statistic instead: the shuffle order depends on the seed, so
+  // `p95LongestLosingStreak` and the drawdown percentiles must reproduce exactly
+  // and must move when the seed moves.
+  check("monte carlo is deterministic on a real seeded statistic",
+    mc1.p95LongestLosingStreak === mc2.p95LongestLosingStreak
+    && mc1.medianMaxDrawdownPct === mc2.medianMaxDrawdownPct
+    && mc1.p95MaxDrawdownPct === mc2.p95MaxDrawdownPct,
+    `p95 streak ${mc1.p95LongestLosingStreak}, median dd ${mc1.medianMaxDrawdownPct}%`);
+  check("a DIFFERENT seed changes the monte carlo answer (negative control)",
+    mcAlt.p95LongestLosingStreak !== mc1.p95LongestLosingStreak
+    || mcAlt.medianMaxDrawdownPct !== mc1.medianMaxDrawdownPct,
+    `seed 12345 -> streak ${mc1.p95LongestLosingStreak}, dd ${mc1.medianMaxDrawdownPct}%; seed 999 -> streak ${mcAlt.p95LongestLosingStreak}, dd ${mcAlt.medianMaxDrawdownPct}%`);
+  check("monte carlo exposes no phantom fields (the old vacuous assertion)",
+    !("medianFinalEquity" in mc1) && !("pProfitable" in mc1),
+    "order-shuffling cannot report an expectancy probability — that is what v2 is for");
   check("monte carlo drawdown bounds are ordered", mc1.medianMaxDrawdownPct <= mc1.p95MaxDrawdownPct && mc1.p95MaxDrawdownPct <= mc1.worstMaxDrawdownPct,
         `median=${mc1.medianMaxDrawdownPct}% p95=${mc1.p95MaxDrawdownPct}% worst=${mc1.worstMaxDrawdownPct}%`);
   check("monte carlo spread is non-trivial on mixed outcomes", mc1.worstMaxDrawdownPct > mc1.medianMaxDrawdownPct,

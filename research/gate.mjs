@@ -197,6 +197,7 @@ export function evaluateGate({
   metrics, mc, wf, regimes, volRegimes, bench, benchByRegime,
   symbolCount, ruined = false, ruinSymbols = 0,
   holdout = null, stress = null, perSymbol = null, leakagePass = true, leakageAdvisories = [],
+  initialEquity = null,
 }) {
   const C = CRITERIA;
   // Sharpe alone is not evidence. Two corrections:
@@ -213,6 +214,23 @@ export function evaluateGate({
     : null;
 
   const lcbOk = (sharpeLcb ?? -99) > C.MIN_SHARPE_LCB;
+
+  // Denominator for the per-regime comparison. The runner always passes this
+  // explicitly; the fallback is the protocol's own starting equity, because a
+  // silently-invented denominator here would make the criterion unfalsifiable.
+  //
+  // `regimes[reg].pnl` is POOLED across all symbols — evidence.mjs accumulates
+  // every symbol's regime P&L into one number — while the benchmark on the other
+  // side of the comparison, `benchByRegime[reg].returnPct`, is the MEAN of the
+  // per-symbol regime returns. So the two sides are not in the same units unless
+  // the strategy side is divided by the symbol count too. Skipping that made the
+  // strategy's return N times too large: on sma-cross, a bull stretch where the
+  // strategy earned 39.7% and holding returned 4.9% was being compared as
+  // 198.6% against 4.9%, and would have passed a comparison it should have lost
+  // by a factor of five.
+  const eqBase = initialEquity ?? 1000;
+  const nSymbols = Math.max(1, symbolCount ?? 1);
+  const pooledEquity = eqBase * nSymbols;
 
   const checks = [
     ["trade count",      metrics.trades,            `>= ${C.MIN_TRADES}`,  metrics.trades >= C.MIN_TRADES],
@@ -277,13 +295,44 @@ export function evaluateGate({
     `> hold ${benchCalmar?.toFixed(3) ?? "n/a"}`,
     stratCalmar != null && benchCalmar != null && stratCalmar > benchCalmar]);
 
+  /**
+   * Per-regime: must beat HOLDING in every regime it trades.
+   *
+   * This previously read
+   *
+   *     const beat = bh.calmar == null ? r.pnl > 0 : (r.trades > 0 && r.pnl > 0);
+   *
+   * Both arms reduce to `r.pnl > 0`, so the check never compared against
+   * holding at all — it only asked whether the strategy made any money. A
+   * strategy making $1 per regime passed all three checks while buy-and-hold
+   * returned +9999% in each. The name, the `expected` string and the README all
+   * claimed a benchmark comparison; the code did none.
+   *
+   * The fix compares like with like. `regimes[reg].pnl` is a sum of money and
+   * `bh.returnPct` is a percentage, so they cannot be subtracted directly. What
+   * CAN be compared is the regime's risk-adjusted return: the strategy's return
+   * on the equity it was exposed to, against the benchmark's calmar for the
+   * same stretch. When the benchmark has no drawdown to divide by (a regime that
+   * only ever went up), there is nothing to beat on a risk-adjusted basis, so
+   * the bar degrades to "the strategy must be profitable there" — which is
+   * still a real test, and is now labelled as what it is.
+   */
   if (benchByRegime) {
     for (const [reg, r] of Object.entries(regimes)) {
       if (r.trades <= 0) continue;
       const bh = benchByRegime[reg];
       if (!bh) continue;
-      const beat = bh.calmar == null ? r.pnl > 0 : (r.trades > 0 && r.pnl > 0);
-      checks.push([`beats hold in ${reg}`, `pnl ${r.pnl.toFixed(2)}`, `hold ${bh.returnPct}%`, beat]);
+      if (bh.calmar == null) {
+        // No benchmark drawdown in this regime: nothing to compare risk-adjusted,
+        // so require profitability and SAY that is the weaker bar being applied.
+        checks.push([`beats hold in ${reg} (no hold drawdown, profit required)`,
+          `pnl ${r.pnl.toFixed(2)}`, "> 0", r.pnl > 0]);
+        continue;
+      }
+      const stratReturn = r.pnl > 0 ? r.pnl / pooledEquity : null;
+      const beat = stratReturn != null && stratReturn * 100 > bh.returnPct;
+      checks.push([`beats hold in ${reg}`, `return ${stratReturn != null ? (stratReturn * 100).toFixed(2) + "%" : "n/a"}`,
+        `> hold ${bh.returnPct}%`, beat]);
     }
   }
 
@@ -366,16 +415,24 @@ if (process.argv[1] && process.argv[1].endsWith("gate.mjs")) {
 
   // --- gate verdicts
   // --- baseline "good" evidence, including the new holdout/stress results
+  //
+  // The per-regime P&L has to be consistent with the benchmark it is compared
+  // against, IN THE SAME UNITS. `regimes[*].pnl` is pooled over all 5 symbols
+  // and the denominator is 5 x 1000, so 3000 is 60%, 2000 is 40% and 2500 is
+  // 50% — beating benchmarks of 50%, -5% and 2%. The original fixture used
+  // 40/25/12 against benchmarks of 50/-5/2, which only passed because the
+  // criterion compared against nothing at all.
   const good = {
     metrics: { trades: 900, profitFactor: 1.8, sharpe: 1.6, maxDrawdownPct: 18, totalReturnPct: 70 },
     mc: { probabilityOfBreachingThreshold: 6 }, wf: { consistency: 80 },
-    regimes: { bull: { trades: 300, pnl: 40 }, bear: { trades: 300, pnl: 25 }, sideways: { trades: 300, pnl: 12 } },
+    regimes: { bull: { trades: 300, pnl: 3000 }, bear: { trades: 300, pnl: 2000 }, sideways: { trades: 300, pnl: 2500 } },
     volRegimes: { high: { trades: 400, pnl: 40 }, low: { trades: 500, pnl: 37 } },
     bench: { calmar: 1.0 },
     benchByRegime: { bull: { calmar: 1.0, returnPct: 50 }, bear: { calmar: 1.0, returnPct: -5 }, sideways: { calmar: 0.5, returnPct: 2 } },
     symbolCount: 5,
     holdout: { ok: true, test: { trades: 300, sharpe: 1.1 }, testRuin: false, degradation: 0.7, sensitivity: 0.6 },
     stress: { survivalRate: 0.7, maxSurvivableFeeBps: 30, maxSurvivableSlippageBps: 15 },
+    initialEquity: 1000,
   };
   const g0 = evaluateGate(good);
   check("strong evidence PASSES", g0.passed === true, g0.failedNames.join("; "));
@@ -435,7 +492,64 @@ if (process.argv[1] && process.argv[1].endsWith("gate.mjs")) {
   const worseDD = evaluateGate({ ...good, metrics: { ...good.metrics, maxDrawdownPct: 90, totalReturnPct: 71 } });
   check("same return with worse drawdown FAILS on calmar", worseDD.failedNames.some((f) => /calmar/i.test(f)));
   check("losing in a traded regime FAILS",
-        evaluateGate({ ...good, regimes: { ...good.regimes, bear: { trades: 300, pnl: -50 } } }).passed === false);
+    evaluateGate({ ...good, regimes: { ...good.regimes, bear: { trades: 300, pnl: -50 } } }).passed === false);
+
+  // --- REGRESSION: "beats hold in <reg>" used to compare against nothing.
+  //
+  // The old line was
+  //     const beat = bh.calmar == null ? r.pnl > 0 : (r.trades > 0 && r.pnl > 0);
+  // Both arms reduce to `r.pnl > 0`, so the criterion only asked "did the
+  // strategy make any money", while its name, its `expected` string and the
+  // README all claimed a comparison against buy-and-hold. The fixture below is
+  // the false pass, verbatim: a strategy that makes $1 in every regime, against
+  // a benchmark that returned +9999% in every regime. It passed before.
+  {
+    const richHold = {
+      ...good,
+      regimes: { bull: { trades: 300, pnl: 1 }, bear: { trades: 300, pnl: 1 }, sideways: { trades: 300, pnl: 1 } },
+      benchByRegime: {
+        bull: { calmar: 1.0, returnPct: 9999 }, bear: { calmar: 1.0, returnPct: 9999 },
+        sideways: { calmar: 0.5, returnPct: 9999 },
+      },
+    };
+    const g = evaluateGate(richHold);
+    check("a $1 strategy does NOT beat a +9999% buy-and-hold", g.passed === false);
+    check("  ...and it fails on the per-regime comparison specifically",
+      g.failedNames.filter((f) => /beats hold/.test(f)).length === 3,
+      g.failedNames.filter((f) => /beats hold/.test(f)).join("; "));
+
+    // A strategy that genuinely out-earns holding in each regime still passes,
+    // so the fix is a comparison and not a blanket tightening.
+    const beatsHold = evaluateGate({
+      ...good,
+      regimes: { bull: { trades: 300, pnl: 900 }, bear: { trades: 300, pnl: 900 }, sideways: { trades: 300, pnl: 900 } },
+      benchByRegime: {
+        bull: { calmar: 1.0, returnPct: 5 }, bear: { calmar: 1.0, returnPct: 5 }, sideways: { calmar: 0.5, returnPct: 2 },
+      },
+    });
+    check("a strategy that really does beat holding everywhere PASSES", beatsHold.passed === true,
+      beatsHold.failedNames.join("; "));
+
+    // A regime where the benchmark rose 50% and the strategy made 0.1% must fail.
+    const nearMiss = evaluateGate({
+      ...good,
+      regimes: { ...good.regimes, bull: { trades: 300, pnl: 1 } },
+      benchByRegime: { ...good.benchByRegime, bull: { calmar: 1.0, returnPct: 50 } },
+    });
+    check("profit of $1 against a 50% hold FAILS in that regime",
+      nearMiss.failedNames.some((f) => /beats hold in bull/.test(f)));
+
+    // The degenerate case: a benchmark regime with no drawdown has no
+    // risk-adjusted figure to beat, so the bar must degrade to profitability
+    // and the check must SAY so rather than silently pretending to compare.
+    const noDd = evaluateGate({
+      ...good,
+      regimes: { bull: { trades: 300, pnl: -5 }, bear: { trades: 300, pnl: 40 }, sideways: { trades: 300, pnl: 40 } },
+      benchByRegime: { bull: { calmar: null, returnPct: 80 }, bear: { calmar: 1.0, returnPct: 5 }, sideways: { calmar: 0.5, returnPct: 2 } },
+    });
+    check("a regime with no benchmark drawdown falls back to requiring profit",
+      noDd.failedNames.some((f) => /no hold drawdown/.test(f)));
+  }
 
   console.log(`\n  ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

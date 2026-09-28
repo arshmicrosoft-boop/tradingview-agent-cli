@@ -9,7 +9,7 @@ status: falsified
 backlog_id: P-002
 code: research/strategies/vol-normalized-breakout.mjs
 protocol: v1
-protocol_hash: 1e42a7d31d851b9b
+protocol_hash: ab8d990e445b2927
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · leakage clean
 trades: 2583
@@ -19,7 +19,7 @@ sharpe: -0.038
 max_drawdown_pct: 83.97
 total_return_pct: -99.61
 gate: fail
-unmet: 18
+unmet: 19
 ---
 
 # volatility-normalized breakout
@@ -120,8 +120,15 @@ Grid tested: `k ∈ {0.10, 0.25, 0.50, 1.00}` × `lookback ∈ {10, 20, 40}`.
 
 ## Result under v1
 
-18 criteria unmet. The information is not in the criterion list, it is in the
+19 criteria unmet. The information is not in the criterion list, it is in the
 ladder.
+
+(It was 18 until the gate's walk-forward criterion was rewired to the
+self-tested `harness.walkForward()` instead of an inline splitter that scored
+each fold as `summedPnl / 1000` — five accounts' P&L over one account's equity,
+used only for its sign. The fix costs this card the walk-forward consistency
+criterion and changes no other number. See the root `README.md` §"Why the gate
+fails".)
 
 **The k ladder** (400d, 15m, 5 symbols; all arms ruin the account):
 

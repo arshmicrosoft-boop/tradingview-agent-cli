@@ -117,7 +117,7 @@ export function cachedVerdicts() {
   try {
     files = fs.readdirSync(CACHE).filter((f) => f.endsWith(".json"));
     for (const f of files) {
-      const doc = readJson(path.join(cacheRoot, f));
+      const doc = readJson(path.join(CACHE, f));
       if (!doc?.strategy || !doc?.verdict) continue;
       const prev = out.get(doc.strategy);
       if (!prev || (prev.ts ?? "") <= (doc.ts ?? "")) out.set(doc.strategy, doc);

@@ -5,7 +5,7 @@ slug: trend-pullback
 status: falsified
 code: research/strategies/trend-pullback.mjs
 protocol: v1
-protocol_hash: 1e42a7d31d851b9b
+protocol_hash: ab8d990e445b2927
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 1557

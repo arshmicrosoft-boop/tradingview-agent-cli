@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Command Centre</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<div class="app">
+
+  <!-- ─────────────────────────────────────────────────────────── top bar -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" id="live-dot" title="SSE connection"></span>
+      <span class="brand-name">COMMAND CENTRE</span>
+    </div>
+    <div class="tb-stats">
+      <div class="stat"><b id="tb-runs">—</b><i>runs</i></div>
+      <div class="stat"><b id="tb-strategies">—</b><i>strategies</i></div>
+      <div class="stat"><b id="tb-protocol">—</b><i>protocol</i></div>
+      <div class="stat wide"><b id="tb-champion">none</b><i>champion</i></div>
+      <div class="stat"><b id="tb-kill" class="kill-off">OFF</b><i>kill switch</i></div>
+      <div class="stat"><b id="tb-tv" class="dim">—</b><i>tradingview</i></div>
+    </div>
+    <div class="tb-right">
+      <span id="tb-clock" class="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <!-- ─────────────────────────────────────────────────────────────── tabs -->
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="dashboard">Dashboard</button>
+    <button class="tab" data-view="strategy">Strategy</button>
+    <button class="tab" data-view="backtest">Backtest</button>
+    <button class="tab" data-view="execution">Execution</button>
+    <button class="tab" data-view="knowledge">Knowledge</button>
+    <div class="tab-spacer"></div>
+    <button class="tab ghost" id="btn-refresh" title="Re-read evidence files">Refresh</button>
+  </nav>
+
+  <!-- ────────────────────────────────────────────────────────────── stage -->
+  <main id="stage">
+
+    <!-- ══════════════════════════════════════════════════════ DASHBOARD -->
+    <section class="view active" data-view="dashboard">
+      <div class="grid-3">
+
+        <div class="col">
+          <div class="panel kpis">
+            <h2>State</h2>
+            <div class="kpi-row">
+              <div class="kpi"><b id="k-runs">—</b><i>total runs</i></div>
+              <div class="kpi"><b id="k-unmet">—</b><i>best unmet</i></div>
+              <div class="kpi"><b id="k-pass">—</b><i>passed gate</i></div>
+              <div class="kpi"><b id="k-cards">—</b><i>cards</i></div>
+            </div>
+            <p class="verdict" id="k-verdict">reading evidence…</p>
+          </div>
+
+          <div class="panel grow">
+            <h2>Leaderboard <small>latest run per strategy, sorted by Sharpe</small></h2>
+            <div class="table-wrap" id="leaderboard"></div>
+          </div>
+        </div>
+
+        <div class="col">
+          <div class="panel grow" style="flex:1.35">
+            <h2>Gate compliance <small>core 11 criteria · red failed, green passed, grey not observable from summary</small></h2>
+            <div class="canvas-slot"><canvas id="c-heatmap"></canvas></div>
+          </div>
+          <div class="panel grow">
+            <h2>Profit factor vs max drawdown <small>dashed line = coin-flip control band</small></h2>
+            <div class="canvas-slot"><canvas id="c-scatter"></canvas></div>
+          </div>
+        </div>
+
+        <div class="col">
+          <div class="panel grow">
+            <h2>Equity curve <small id="eq-label">select a strategy</small></h2>
+            <div class="canvas-slot"><canvas id="c-equity"></canvas></div>
+            <div class="eq-stats" id="eq-stats"></div>
+          </div>
+          <div class="panel grow">
+            <h2>Sharpe distribution <small>all negative — nothing is a buy</small></h2>
+            <div class="canvas-slot"><canvas id="c-sharpe"></canvas></div>
+          </div>
+          <div class="panel grow">
+            <h2>Dataset coverage</h2>
+            <div class="table-wrap short" id="coverage"></div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════ STRATEGY -->
+    <section class="view" data-view="strategy">
+      <div class="grid-s">
+        <div class="col">
+          <div class="panel grow">
+            <h2>Strategies</h2>
+            <div class="picker" id="str-picker"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2 id="str-title">—</h2>
+            <div class="metric-grid" id="str-metrics"></div>
+          </div>
+          <div class="panel grow">
+            <h2>Simulated equity <small>recomputed from strategy code, not read from the run record</small></h2>
+            <div class="canvas-slot"><canvas id="c-str-equity"></canvas></div>
+          </div>
+          <div class="panel grow">
+            <h2>Run history <small>every runs.jsonl record</small></h2>
+            <div class="table-wrap short" id="str-history"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel grow">
+            <h2>Gate checks <small id="str-check-count"></small></h2>
+            <div class="checks" id="str-checks"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════ BACKTEST -->
+    <section class="view" data-view="backtest">
+      <div class="grid-b">
+        <div class="col">
+          <div class="panel">
+            <h2>Run a backtest</h2>
+            <form id="bt-form" class="form">
+              <label>Strategy<select name="strategy" id="bt-strategy"></select></label>
+              <label>Timeframe<select name="tf" id="bt-tf">
+                <option>15m</option><option>5m</option><option>1h</option><option>4h</option><option>1d</option>
+              </select></label>
+              <div class="form-2">
+                <label>Days<input type="number" name="days" value="400" min="1" max="400"></label>
+                <label>Equity<input type="number" name="equity" value="1000" min="1"></label>
+              </div>
+              <div class="form-2">
+                <label>Risk %<input type="number" name="risk" value="0.01" step="0.001" min="0.0001"></label>
+                <label>Max hold<input type="number" name="hold" value="96" min="1"></label>
+              </div>
+              <div class="btn-row">
+                <button class="btn primary" type="submit" id="bt-run">Run in worker</button>
+                <button class="btn" type="button" id="bt-spawn">Run via CLI</button>
+                <button class="btn danger" type="button" id="bt-cancel" disabled>Cancel</button>
+              </div>
+              <p class="note">A run appends to <code>runs.jsonl</code> and rewrites <code>state.json</code>. It is real evidence, not a preview.</p>
+            </form>
+          </div>
+          <div class="panel grow">
+            <h2>Queue</h2>
+            <div class="table-wrap short" id="bt-recent"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2>Progress</h2>
+            <div class="phases" id="bt-phases"></div>
+            <div class="meter"><div class="meter-fill" id="bt-meter"></div></div>
+            <div class="phase-now"><b id="bt-phase">idle</b><span id="bt-elapsed"></span></div>
+          </div>
+          <div class="panel grow">
+            <h2>Log <small>newest at the bottom, capped — never scrolls</small></h2>
+            <pre class="log" id="bt-log"></pre>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel grow">
+            <h2>Result</h2>
+            <div id="bt-result" class="result-empty">No run yet in this session.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════ EXECUTION -->
+    <section class="view" data-view="execution">
+      <div class="grid-e">
+        <div class="col">
+          <div class="panel">
+            <h2>Account</h2>
+            <div class="metric-grid tight" id="ex-account"></div>
+          </div>
+          <div class="panel">
+            <h2>Positions</h2>
+            <div class="table-wrap short" id="ex-positions"></div>
+          </div>
+          <div class="panel grow">
+            <h2>Price <small id="px-label">—</small></h2>
+            <div class="seg" id="px-seg"></div>
+            <div class="canvas-slot"><canvas id="c-price"></canvas></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2>Risk gate</h2>
+            <div class="risk-list" id="ex-risk"></div>
+            <button class="btn danger wide" id="ex-kill">Flip kill switch</button>
+          </div>
+          <div class="panel grow">
+            <h2>Propose → confirm → order</h2>
+            <form id="ex-form" class="form">
+              <label>Symbol<input name="symbol" id="ex-symbol" placeholder="BINANCE:BTCUSDT" autocomplete="off"></label>
+              <div class="form-2">
+                <label>Side<select name="side"><option value="buy">buy</option><option value="sell">sell</option></select></label>
+                <label>Qty<input name="qty" id="ex-qty" type="number" step="any" min="0" placeholder="from propose"></label>
+              </div>
+              <label>Thesis<textarea name="thesis" id="ex-thesis" rows="2" placeholder="why — written to audit.jsonl"></textarea></label>
+              <div class="btn-row">
+                <button class="btn" type="button" id="ex-propose">Propose (dry run)</button>
+                <button class="btn danger" type="submit" id="ex-order" disabled>Place order</button>
+              </div>
+            </form>
+            <div id="ex-verdict" class="verdict-box">Run a proposal to see the gate's sizing before anything is clicked.</div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel grow">
+            <h2>Audit trail <small>config/audit.jsonl, newest first</small></h2>
+            <div class="table-wrap" id="ex-audit"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════ KNOWLEDGE -->
+    <section class="view" data-view="knowledge">
+      <div class="grid-k">
+        <div class="col">
+          <div class="panel grow">
+            <h2>Strategy cards</h2>
+            <div class="picker" id="k-cards"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel grow">
+            <h2 id="k-card-title">—</h2>
+            <div class="md" id="k-card-body"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2>Repository docs</h2>
+            <div class="seg" id="k-docs"></div>
+          </div>
+          <div class="panel">
+            <h2>Integrity</h2>
+            <div class="btn-row">
+              <button class="btn" id="k-validate">Validate cards</button>
+              <button class="btn" id="k-verify">Run verify</button>
+            </div>
+            <pre class="log short" id="k-integrity"></pre>
+          </div>
+          <div class="panel grow">
+            <h2 id="k-doc-title">—</h2>
+            <div class="md" id="k-doc-body"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

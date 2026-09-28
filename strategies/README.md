@@ -47,6 +47,41 @@ does not get implemented, no matter how good the backtest looked.
 | Blocked on protocol v2 | **2** — P-005, P-006 |
 | Next one | **P-003** — selectivity on a falsified trigger |
 
+### The protocol hash, and the defect that made it a fiction
+
+Every card above cites `protocol_hash`, and `validate.mjs` fails the build if a
+card's hash disagrees with its run's. That only means something if the hash can
+see the thresholds.
+
+It could not. `protocol.mjs` canonicalised with
+`JSON.stringify(p, Object.keys(p).sort())`, and when the replacer is an array it
+acts as a key whitelist applied at *every* level of nesting, not just the top.
+A whitelist of top-level names therefore matched no nested key, and every nested
+object serialised to `{}` — the protocol hashed to 454 characters of its real
+1,414, with `criteria:{}`, `costs:{}` and `risk:{}` all empty. Relaxing
+`MIN_PF` from 1.3 to 0.01, zeroing fees, or raising risk per trade from 1% to
+100% **all produced the identical hash**. Every card in this directory was citing
+a fingerprint that could not distinguish a frozen protocol from a rigged one.
+
+`protocol.mjs` now uses a real recursive canonicalisation and carries 21
+selftests, twelve of which mutate a different threshold and assert the hash
+moves. The v1 hash changed from `1e42a7d31d851b9b` to `ab8d990e445b2927`, all
+10 cards were re-cited, and every strategy was re-run — producing bit-identical
+metrics, which is the result you want from a re-run: nothing moved except the
+fingerprint.
+
+`npm run verify` also fails if the **latest** run per strategy cites a stale
+hash. Historical records are kept, deliberately: a re-run appends rather than
+overwrites, and the old records are the proof that the old broken hash was in
+use. Pruning them would destroy the evidence the mechanism exists to provide.
+
+**A v2 generation now exists** — `research/protocol.v2.json`,
+`research/robustness.mjs`, `research/gate-v2.mjs`, results in
+`research/registry-v2/`. It restates all 18 v1 criteria at their exact v1 values,
+changes none of them, and adds 7 robustness criteria. The two generations never
+share an archive or a leaderboard. All 10 strategies fail all 7 of the new ones;
+see the root `README.md` for what v2 measures and why v1 structurally could not.
+
 **Read the numbers in the wrong order and you will learn the wrong thing.**
 The result table in the root `README.md` is sorted by Sharpe, but Sharpe is the
 *least* informative column here: every strategy ran into the ruin circuit
@@ -110,7 +145,6 @@ strategies/
     tested/          run under v1, verdict recorded             (8 cards)
     controls/        negative controls — no possible edge, by construction (2 cards)
 ```
-
 ---
 
 ## How to add a hypothesis
@@ -139,7 +173,10 @@ are not structural: every card in `cards/tested/` and `cards/controls/` is
 reconciled against `research/registry/*/runs.jsonl`, so a card that quotes
 `profit_factor: 1.013` when the run says `0.917` **fails the build**. Three such
 mismatches existed when the linter was first switched on, which is the argument
-for having it.
+for having it. Two more appeared while fixing the protocol hash: a stale
+`protocol_hash` on all 10 cards, and `vol-normalized-breakout` still quoting
+`unmet: 18` after the walk-forward criterion was rewired. Both were caught, both
+would have been invisible to a human re-reading a diff.
 
 ---
 

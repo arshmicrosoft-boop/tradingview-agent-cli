@@ -216,3 +216,107 @@ no filter can rescue it.
   to require a second independent run before anyone writes a card proposing to
   trade it. The card's success criterion is a reported slope with a control arm
   attached — something the gate does not measure at all.
+
+## RESULT — run 2026-09-27, `research/p003-ladder.mjs`
+
+**The trigger is not worth keeping, and not for the reason this card set out to
+test.** Tightening selectivity never rescues `sma-cross`; it is a net loser per
+unit of risk at every rung of both ladders.
+
+Reproduction gate passed exactly, which is what makes the rest trustworthy:
+L0 returned **1,984 trades / PF 1.013** for `sma-cross` and **2,270 / PF 0.751**
+for the raw control — bit-identical to the recorded T-001 baseline, so the
+harness demonstrably did not drift.
+
+### The pre-registered statistic is defective, and it said what it wanted
+
+Run as written (`expectancy[L] = sum(pnl[L]) / trades[L]`, in dollars), the card
+produced:
+
+```
+  gap  sma-cross  slope  3.925  (levels: 0.113, 1.190, 0.254, -0.261, -0.163)
+  gap  control    slope  1.476
+  excess          2.449   -> "OUTCOME (1), the trigger is informative"
+```
+
+That verdict is an artifact and was not reported as a finding. Position size is
+1% of *current* equity, so dollar pnl per trade is a function of the equity
+path: any level with PF > 1 grows its equity and inflates its own dollar
+expectancy, and any level with PF < 1 shrinks toward zero. The "rise" was mostly
+compounding, and the sequence above is not even monotone — it is one spike at
+L1 carrying the whole slope. The ladder was re-scored in **R** (pnl over the
+stop-implied risk), which is invariant to position size.
+
+### The card's own ladder is under-powered by construction
+
+Pre-registered gap thresholds `[0, 0.10, 0.25, 0.50, 1.00]` remove only
+**14.8%** of trades (ruin on) / **36.0%** (ruin off), because
+`(SMA20 - SMA50) / ATR(14)` sits far above 0.25 almost always. The selectivity
+axis barely moves, so the regression has almost no range to work with. The VR
+second arm binds hard (**99%** removed) but leaves 3–4 usable points plus a
+46-trade tail whose mean R of +0.86 carries a standard error of 0.51 — noise.
+
+**Conclusion: this card could not answer its own question as specified.** That
+is a finding about the card, not about `sma-cross`.
+
+### What the data says (mean R per trade)
+
+Ruin enabled — the configuration that reproduces the baseline:
+
+| ladder | 0.00 | 0.10 | 0.25 | 0.50 | 1.00 | slope | t |
+|---|---|---|---|---|---|---|---|
+| A sma-cross | -0.2169 | -0.2035 | -0.2201 | -0.2411 | -0.2356 | 0.149 | 1.36 |
+| B random | -0.2744 | -0.2294 | -0.2264 | -0.2062 | -0.2785 | 0.279 | 2.21 |
+
+Ruin disabled — sensitivity, and it is not a small one:
+
+| ladder | 0.00 | 0.10 | 0.25 | 0.50 | 1.00 | slope | t |
+|---|---|---|---|---|---|---|---|
+| A sma-cross | -0.3335 | -0.3337 | -0.3187 | -0.3386 | -0.2931 | -0.085 | -2.51 |
+| B random | -0.4037 | -0.3350 | -0.3378 | -0.3064 | -0.3413 | -0.139 | -0.74 |
+
+- No statistically significant **improvement** on the trigger in either
+  configuration. Best case flat (t = 1.36); in the untruncated sample tightening
+  the gap filter is significantly *harmful* (t = −2.51).
+- The signalless control is never reliably worse than the trigger. Under the
+  baseline configuration the control's slope (0.279) **exceeds** the strategy's
+  (0.149) — excess −0.130. A random side with the same `|gap|` filter matches or
+  beats the SMA trigger.
+- The VR family's control fit reports t = −31.58 on 4 points, which is not a
+  strong result, it is a near-perfect line through 4 points with one dominant
+  leverage point. Do not cite it.
+
+### The finding underneath the finding
+
+**T-001's headline PF 1.013 is not edge.** The same trades average **−0.22R**
+per trade (ruin on) and **−0.33R** at PF 0.981 (ruin off). A profit factor above
+1.0 coexists with clearly negative per-unit-risk expectancy because winners
+arrive with smaller stop-implied risk than losers. The profit factor was
+reporting position sizing, not expectancy. Separately, ruin truncation flatters
+the trigger by ~0.11R, so the recorded baseline is the optimistic version of an
+already-losing arm.
+
+This is the card's stated falsifier, met in the comparative form: expectancy is
+flat-to-worse at high selectivity, and the same ladder on `_control_random`
+matches it. **`sma-cross` is closed.** No filter rescues it, and the SMA
+condition is not the thing worth keeping.
+
+### Housekeeping
+
+- Instrument: `research/p003-ladder.mjs` (`--no-ruin`, `--family=gap|vr`).
+  Deliberately in `research/`, not `research/strategies/`, so it can never be
+  gated as a strategy.
+- The reproduction gate is load-bearing and proved it: `--no-ruin` cannot
+  reproduce a baseline recorded *with* ruin, and refuses to report slopes unless
+  told the mismatch is expected.
+- Three defects found and fixed while building it, all of which had produced
+  confident wrong answers: dollar scoring of expectancy; unweighted OLS letting
+  a 46-trade point drive a slope; and hardcoded arm names that silently skipped
+  the entire VR family, turning a two-family pre-registration into a
+  single-family one.
+- `npm run verify` reports 2 pre-existing failures unrelated to this work
+  (`research/protocol.mjs` was modified by the in-progress gate-v2 work, so 17
+  of 24 recorded runs cite a stale protocol hash, plus a card-vs-run selftest
+  mismatch). Not touched.
+- Still open, and it dwarfs this: the account carries a 1.64% margin buffer at
+  10x. No filter research changes that.

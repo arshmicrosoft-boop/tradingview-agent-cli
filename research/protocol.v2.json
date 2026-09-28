@@ -1,0 +1,120 @@
+{
+  "protocol": "v2",
+  "frozen": true,
+  "frozen_at": "2026-09-27",
+  "note": "Second evaluation generation. Separate results archive (research/registry-v2/), never mixed with v1. Every v1 criterion is RESTATED HERE AT ITS EXACT v1 VALUE and no v1 threshold is changed — v2 is additive, so a v2 run and a v1 run are comparable on the shared 18 and differ only on the seven robustness criteria v2 adds. A different protocol_hash marks them as a different experiment (see registry.currentState).",
+
+  "inherits_from": "v1",
+  "adds": [
+    "anchored walk-forward with per-fold re-optimisation on train only",
+    "bootstrap / block-bootstrap Monte Carlo over trade OUTCOMES, not order",
+    "deflated Sharpe ratio against the number of hypotheses actually tried",
+    "drawdown distribution under random fill and size error",
+    "fine-grained slippage and fee sweep with an explicit break-even cost"
+  ],
+
+  "data": {
+    "provider": "binance",
+    "timeframe": "15m",
+    "symbols": ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "SOLUSDT", "ZECUSDT"],
+    "period_days": 400,
+    "min_symbols": 5,
+    "require_zero_gaps": true
+  },
+
+  "split": {
+    "train_fraction": 0.7,
+    "warmup_bars": 250,
+    "holdout_is_untouched": true
+  },
+
+  "costs": {
+    "fee_bps": 10,
+    "slippage_bps": 5,
+    "stress_fee_multipliers": [1, 2, 5],
+    "stress_slippage_multipliers": [1, 2, 5]
+  },
+
+  "risk": {
+    "equity": 1000,
+    "risk_per_trade_pct": 0.01,
+    "stop_atr_mult": 2,
+    "atr_period": 14,
+    "max_leverage": 10,
+    "max_hold_bars": 96,
+    "ruin_equity_pct": 0.2,
+    "max_open_positions": 1
+  },
+
+  "criteria": {
+    "MIN_TRADES": 500,
+    "MIN_SYMBOLS": 5,
+    "MIN_REGIMES": 3,
+    "MIN_VOL_REGIMES": 2,
+    "MIN_PF": 1.3,
+    "MIN_SHARPE": 1.0,
+    "MAX_DD": 35,
+    "MIN_WF": 50,
+    "MAX_MC_BREACH": 25,
+    "MIN_TEST_TRADES": 60,
+    "MIN_TEST_SHARPE": 0.5,
+    "MIN_DEGRADATION": 0.25,
+    "MIN_SENSITIVITY": 0.30,
+    "MIN_COST_SURVIVAL": 0.40,
+    "MIN_COST_BPS": 25,
+    "MIN_TSTAT": 2.0,
+    "MIN_SHARPE_LCB": 0.3,
+    "MIN_SYMBOL_PASS_RATE": 0.6,
+
+    "MIN_WF_CONSISTENCY": 60,
+    "MIN_WF_COVERAGE": 75,
+    "MIN_WF_EFFICIENCY": 0.40,
+    "MIN_WF_FOLD_SHARPE": 0.30,
+    "MIN_MC_PROFITABLE": 0.90,
+    "MIN_MC_SHARPE_P": 0.90,
+    "MIN_DEFLATED_SHARPE": 0.95,
+    "MIN_FILL_DD_BREACH": 25
+  },
+
+  "regimes": {
+    "trend_len": 200,
+    "slope_len": 50,
+    "bull_slope": 0.004,
+    "bear_slope": -0.004,
+    "vol_len": 100,
+    "vol_high_pct": 0.70
+  },
+
+  "monte_carlo": { "runs": 1000, "seed": 12345, "dd_threshold_pct": 20 },
+
+  "robustness": {
+    "walk_forward": {
+      "folds": 4,
+      "warmup_bars": 250,
+      "objective": "sharpe",
+      "min_fold_coverage_pct": 75,
+      "why_coverage": "without it a strategy that goes silent out of sample scores 100% consistency across the folds that did fire; verified against a signal silent for the final 37% of the sample, which cleared every walk-forward criterion with perfect marks"
+    },
+    "bootstrap": {
+      "runs": 2000,
+      "seed": 12345,
+      "method": "block",
+      "block_size_rule": "ceil(n^(1/3))",
+      "why_block": "trades arrive in clusters of consecutive bars within one trend, so iid resampling understates the tail"
+    },
+    "deflated_sharpe": {
+      "min_trials_floor": 15,
+      "min_deflated_sharpe": 0.95,
+      "why_not_zero": "DSR > 0 only asks that the observed Sharpe exceed E[max of N trials], which at N=74 is 2.31 per trade — unreachable, so the criterion is a constant 0 for every strategy and discriminates nothing. DSR >= 0.95 is the same 95% one-sided confidence used in robustness.deflatedSharpe.survivesMultipleTesting, so the gate and the statistic agree.",
+      "trial_count_source": "sum of grid variants evaluated across every strategy in the archive; the card count is reported alongside as the lower bound"
+    },
+    "fill_perturbation": { "size_jitter_pct": 0.15, "extra_slippage_bps": 10, "dd_threshold_pct": 20 },
+    "slippage_sweep": {
+      "mode": "paired",
+      "fee_steps_bps": [0, 2, 5, 8, 10, 15, 20, 30, 50, 80],
+      "slip_steps_bps": [0, 2, 5, 8, 10, 15, 20, 30, 50, 80],
+      "why_finer_than_v1": "v1 steps 1x/2x/5x and can step straight over the cliff, reporting 'survives nothing' when the true break-even sits between two multipliers",
+      "why_paired": "survival depends on the SUM of fee and slippage, so the diagonal plus the two axis legs bound the break-even in a third of the simulations the full cross product needs. Cost survival is already a v1 criterion; this refines WHERE the cliff is, it does not re-decide whether it exists"
+    }
+  }
+}

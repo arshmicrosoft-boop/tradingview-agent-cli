@@ -36,13 +36,17 @@ const suites = [
   ["research/risk-engine.mjs","risk engine"],
   ["research/harness.mjs",    "harness"],
   ["research/gate.mjs",       "gate"],
+  ["research/gate-v2.mjs",    "gate v2"],
+  ["research/robustness.mjs", "robustness"],
+  ["research/protocol.mjs",   "protocol", ["--selftest"]],
+  ["research/registry.mjs",   "registry", ["--selftest"]],
   ["research/leakage.mjs",    "leakage"],
   ["research/controls.mjs",   "negative controls"],
   ["strategies/validate.mjs", "strategy cards"],
 ];
-for (const [file, label] of suites) {
+for (const [file, label, extra = []] of suites) {
   try {
-    const out = execFileSync("node", [join(ROOT, file)], { encoding: "utf8", timeout: 120000 });
+    const out = execFileSync("node", [join(ROOT, file), ...extra], { encoding: "utf8", timeout: 120000 });
     const m = out.match(/(\d+) passed, (\d+) failed/);
     check(`${label} selftest`, m && m[2] === "0", m ? `${m[1]}/${+m[1] + +m[2]}` : out.slice(-80));
   } catch (e) {
@@ -114,6 +118,53 @@ for (const f of readdirSync(stratDir).filter((x) => x.endsWith(".mjs"))) {
   } catch (e) { bad.push(`${f}: ${e.message.slice(0, 60)}`); }
 }
 check("every strategy exports a signal function", bad.length === 0, bad.join("; "));
+
+// The v2 results archive must stay separate. If a v2 run could end up in the v1
+// leaderboard, "best challenger" would rank numbers produced under two
+// different frozen protocols, which is not a comparison.
+const v2Archive = join(ROOT, "research", "registry-v2");
+if (existsSync(v2Archive)) {
+  const v2Dirs = readdirSync(v2Archive).filter((e) => e !== "state.json");
+  const v2Runs = v2Dirs
+    .filter((e) => existsSync(join(v2Archive, e, "runs.jsonl")))
+    .flatMap((e) => readFileSync(join(v2Archive, e, "runs.jsonl"), "utf8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l)));
+  const { PROTOCOL, PROTOCOL_V2 } = await import(pathToFileURL(join(ROOT, "research", "protocol.mjs")).href);
+  check("v2 runs never carry the v1 protocol hash",
+    v2Runs.length === 0 || v2Runs.every((r) => r.protocol_hash === PROTOCOL_V2.protocol_hash),
+    `${v2Runs.length} v2 runs, all on ${PROTOCOL_V2.protocol_hash}`);
+  check("v1 and v2 protocol hashes are distinct",
+    PROTOCOL.protocol_hash !== PROTOCOL_V2.protocol_hash,
+    `v1 ${PROTOCOL.protocol_hash} / v2 ${PROTOCOL_V2.protocol_hash}`);
+  const v1Runs = readdirSync(join(ROOT, "research", "registry"))
+    .filter((e) => existsSync(join(ROOT, "research", "registry", e, "runs.jsonl")))
+    .flatMap((e) => readFileSync(join(ROOT, "research", "registry", e, "runs.jsonl"), "utf8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l)));
+  // The LATEST run per strategy must cite the current hash. Older records are
+  // allowed to cite older hashes, and should be: a re-run appends rather than
+  // overwrites, so the archive is the trail of what was actually measured and
+  // when. Pruning stale records because a hash function was corrected would
+  // destroy the evidence the hash exists to provide — the old records are the
+  // proof that the old (broken) hash was in use.
+  const byStrategy = new Map();
+  for (const r of v1Runs) {
+    const cur = byStrategy.get(r.strategy_id);
+    if (!cur || r.ts > cur.ts) byStrategy.set(r.strategy_id, r);
+  }
+  const stale = [...byStrategy.values()].filter((r) => r.protocol_hash !== PROTOCOL.protocol_hash);
+  check("the latest v1 run per strategy cites the current v1 protocol hash", stale.length === 0,
+    stale.length ? `${stale.map((r) => r.strategy_id).join(", ")} — re-run npm run research:all`
+                 : `${byStrategy.size} strategies current, ${v1Runs.length} total records in the archive`);
+  const superseded = v1Runs.length - byStrategy.size;
+  // `>= 0` on a difference of two counts is a tautology and can never fail —
+  // the same defect that was removed from harness.mjs in this changeset. The
+  // real invariant is that history exists at all, i.e. at least one superseded
+  // record is still on file.
+  check("superseded v1 runs are retained, not overwritten", superseded > 0,
+    superseded > 0
+      ? `${superseded} historical record(s) kept alongside the current ones`
+      : "every v1 record cites the current hash — history has been overwritten, which is what a rewrite would look like");
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

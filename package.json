@@ -12,11 +12,17 @@
     "test:risk": "node research/risk-engine.mjs",
     "test:harness": "node research/harness.mjs",
     "test:gate": "node research/gate.mjs",
+    "test:gate:v2": "node research/gate-v2.mjs",
+    "test:robustness": "node research/robustness.mjs",
+    "test:protocol": "node research/protocol.mjs --selftest",
+    "test:registry": "node research/registry.mjs --selftest",
     "test:exec": "node execution/paper-trade.mjs selftest",
     "test": "npm run verify",
 
     "research": "node research/run.mjs",
     "research:all": "node research/run.mjs --all --tf 15m",
+    "research:v2": "node research/run-v2.mjs",
+    "research:all:v2": "node research/run-v2.mjs --all --tf 15m",
 
     "tv:launch": "powershell -ExecutionPolicy Bypass -File execution/launch-tv.ps1",
     "web": "node frontend/server.mjs",

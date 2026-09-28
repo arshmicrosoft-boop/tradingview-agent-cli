@@ -2,7 +2,7 @@
   "$comment": "Machine-readable index of the strategy knowledge base. strategies/validate.mjs reconciles this against the filesystem in both directions: a card on disk that is not listed here fails verify, and so does an entry here with no card. SCHEMA.md is the format spec; this file is the index the linter checks. Hand-editable, but `node strategies/validate.mjs` is the arbiter.",
   "schema_version": 1,
   "protocol": "v1",
-  "protocol_hash": "1e42a7d31d851b9b",
+  "protocol_hash": "ab8d990e445b2927",
   "dataset": "binance BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps",
   "champion": null,
   "champion_note": "No card has ever passed the gate. The linter enforces this: it fails if any card has status `promoted` while this is null, and fails if this is non-null while no card is promoted. Both directions are checked so the headline cannot drift from the cards.",

@@ -11,15 +11,36 @@
  *          research/registry/state.json
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REG = join(HERE, "registry");
 
-function ensure() { if (!existsSync(REG)) mkdirSync(REG, { recursive: true }); }
-function dirFor(id) { const d = join(REG, id); if (!existsSync(d)) mkdirSync(d, { recursive: true }); return d; }
+/**
+ * Two archives, one per protocol generation.
+ *
+ *   v1 -> research/registry/       the only archive the 15 cards cite
+ *   v2 -> research/registry-v2/    its own results, never mixed with v1
+ *
+ * This is `strategies/README.md`'s rule made mechanical: "it runs as a separate
+ * generation with its own results archive, never mixed with v1". Mixing them
+ * would let a v2 run and a v1 run sit in one leaderboard, and they are not
+ * comparable — a different protocol_hash is a different experiment.
+ */
+const ARCHIVES = {
+  v1: join(HERE, "registry"),
+  v2: join(HERE, "registry-v2"),
+};
+
+const REG = (archive) => {
+  const dir = ARCHIVES[archive ?? "v1"];
+  if (!dir) throw new Error(`unknown archive "${archive}" — use ${Object.keys(ARCHIVES).join(" or ")}`);
+  return dir;
+};
+
+function ensure(dir) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); return dir; }
+function dirFor(id, archive) { return ensure(join(REG(archive), id)); }
 
 function readJsonl(p) {
   if (!existsSync(p)) return [];
@@ -28,11 +49,12 @@ function readJsonl(p) {
   }).filter(Boolean);
 }
 
-/** Record one evaluation. */
-export function record({ strategyId, version = 1, protocolHash, datasetHash, strategyHash, metrics, verdict, notes = "" }) {
-  ensure();
+/** Record one evaluation. `archive` defaults to v1. */
+export function record({ strategyId, version = 1, protocolHash, datasetHash, strategyHash, metrics, verdict, notes = "", archive = "v1" }) {
+  const dir = dirFor(strategyId, archive);
   const entry = {
     ts: new Date().toISOString(),
+    archive: archive ?? "v1",
     strategy_id: strategyId,
     version,
     protocol_hash: protocolHash,
@@ -47,19 +69,32 @@ export function record({ strategyId, version = 1, protocolHash, datasetHash, str
     sharpe_lcb: verdict?.sharpeLcb ?? null,
     passed: !!verdict?.passed,
     failed: verdict?.failedNames ?? [],
+    // Criterion VALUES, not just names.
+    //
+    // A drift check that diffs only `failed` cannot see a criterion whose value
+    // changed while it kept failing either way — which is exactly what happened
+    // here: rewiring the walk-forward criterion from the pooled splitter to the
+    // self-tested `harness.walkForward` changed consistency from 25 to 0 on four
+    // strategies, and the diff reported "no metric drift" because the recorded
+    // fields are trades/PF/Sharpe/drawdown/return, none of which moved. Storing
+    // the values means the next such change is visible without re-reading code.
+    failed_detail: (verdict?.checks ?? [])
+      .filter((c) => !c.ok)
+      .map((c) => `${c.name}=${c.actual} (bar ${c.expected})`),
     notes,
   };
-  appendFileSync(join(dirFor(strategyId), "runs.jsonl"), JSON.stringify(entry) + "\n");
+  appendFileSync(join(dir, "runs.jsonl"), JSON.stringify(entry) + "\n");
   return entry;
 }
 
-export function runsFor(strategyId) {
-  return readJsonl(join(REG, strategyId, "runs.jsonl"));
+export function runsFor(strategyId, archive = "v1") {
+  return readJsonl(join(REG(archive), strategyId, "runs.jsonl"));
 }
 
-export function allStrategies() {
-  if (!existsSync(REG)) return [];
-  return readdirSafe(REG);
+export function allStrategies(archive = "v1") {
+  const root = REG(archive);
+  if (!existsSync(root)) return [];
+  return readdirSafe(root);
 }
 function readdirSafe(d) {
   try {
@@ -74,11 +109,11 @@ function readdirSafe(d) {
  * Runs under a different protocol are kept for the record but are not
  * comparable, so they can never become champion.
  */
-export function currentState(protocolHash) {
-  ensure();
+export function currentState(protocolHash, archive = "v1", { write = true } = {}) {
+  ensure(REG(archive));
   const rows = [];
-  for (const id of allStrategies()) {
-    for (const r of runsFor(id)) rows.push({ ...r, strategy_id: id });
+  for (const id of allStrategies(archive)) {
+    for (const r of runsFor(id, archive)) rows.push({ ...r, strategy_id: id });
   }
   const comparable = rows.filter((r) => r.protocol_hash === protocolHash);
   const passing = comparable.filter((r) => r.passed);
@@ -102,6 +137,7 @@ export function currentState(protocolHash) {
     .sort((a, b) => Number(b.sharpe ?? -99) - Number(a.sharpe ?? -99));
 
   const state = {
+    archive: archive ?? "v1",
     protocol_hash: protocolHash,
     champion: champion ? {
       strategy_id: champion.strategy_id, version: champion.version,
@@ -116,16 +152,61 @@ export function currentState(protocolHash) {
     runs_under_this_protocol: comparable.length,
     incomparable_runs: rows.length - comparable.length,
   };
-  writeFileSync(join(REG, "state.json"), JSON.stringify(state, null, 2));
+  // `write: false` is used by the selftest, which must not overwrite a real
+  // leaderboard with a state derived from a deliberately wrong hash.
+  if (write) writeFileSync(join(REG(archive), "state.json"), JSON.stringify(state, null, 2));
   return state;
 }
 
 if (process.argv[1] && process.argv[1].endsWith("registry.mjs")) {
-  const { PROTOCOL } = await import("./protocol.mjs");
-  const state = currentState(PROTOCOL.protocol_hash);
+  const { PROTOCOL, PROTOCOL_V2 } = await import("./protocol.mjs");
+  const which = process.argv.includes("--v2") ? "v2" : "v1";
+  const p = which === "v2" ? PROTOCOL_V2 : PROTOCOL;
+  const state = currentState(p.protocol_hash, which);
   console.log(JSON.stringify(state, null, 2));
   if (!state.champion) {
-    console.log("\n  NO CHAMPION. Nothing has passed the gate under " + PROTOCOL.protocol);
+    console.log("\n  NO CHAMPION. Nothing has passed the gate under " + p.protocol);
     console.log("  Every run so far is a rejected challenger.");
   }
+}
+
+// --------------------------------------------------------------- selftest
+if (process.argv[1] && process.argv[1].endsWith("registry.mjs") && process.argv.includes("--selftest")) {
+  let pass = 0, fail = 0;
+  const check = (n, c, x = "") => { c ? pass++ : fail++; console.log(`  ${c ? "PASS" : "FAIL"}  ${n}${x ? "  :: " + x : ""}`); };
+  console.log("registry.mjs selftest\n");
+
+  // The v1 and v2 archives must not be able to see each other's runs. That is
+  // the whole reason there are two directories: a v2 result must never appear
+  // in a v1 leaderboard, or "best challenger" would rank incomparable numbers.
+  const probe = "zz-selftest-probe";
+  record({ strategyId: probe, protocolHash: "deadbeefdeadbeef", metrics: { trades: 1, profitFactor: 1, sharpe: 0, maxDrawdownPct: 0, totalReturnPct: 0 }, verdict: { passed: false, failedNames: [] }, archive: "v2" });
+  check("a v2 run is invisible to the v1 archive", !allStrategies("v1").includes(probe));
+  check("a v2 run is visible in the v2 archive", allStrategies("v2").includes(probe));
+  check("record() defaults to the v1 archive", (() => {
+    record({ strategyId: "zz-selftest-probe-v1", protocolHash: "deadbeefdeadbeef", metrics: {}, verdict: { passed: false, failedNames: [] } });
+    return allStrategies("v1").includes("zz-selftest-probe-v1") && !allStrategies("v2").includes("zz-selftest-probe-v1");
+  })());
+  check("an unknown archive name is refused, not silently written to v1",
+    (() => { try { record({ strategyId: "zz-x", archive: "v9" }); return false; } catch { return true; } })());
+  check("a run under a different protocol hash is never a champion", (() => {
+    // Read the archive without going through currentState(), which WRITES
+    // state.json. The selftest must not overwrite the real v2 leaderboard with
+    // a state computed for a hash that has no runs.
+    const rows = allStrategies("v2").flatMap((id) => runsFor(id, "v2"));
+    const s = currentState("0000000000000000", "v2", { write: false });
+    return s.champion === null && s.runs_under_this_protocol === 0 && rows.length >= 1;
+  })(), "queried under a hash that has no runs, without writing state.json");
+
+  // Clean up the probes so a selftest run leaves no evidence behind.
+  for (const a of ["v1", "v2"]) {
+    for (const id of allStrategies(a)) {
+      if (id.startsWith("zz-selftest-probe")) rmSync(join(ARCHIVES[a], id), { recursive: true, force: true });
+    }
+  }
+  check("selftest probes are cleaned up",
+    !allStrategies("v1").some((x) => x.startsWith("zz-")) && !allStrategies("v2").some((x) => x.startsWith("zz-")));
+
+  console.log(`\n  ${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
 }

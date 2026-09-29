@@ -61,7 +61,12 @@ export async function runOne({ strategy, tf, days, simCfg }) {
     // It was `datasetHash(ev.primary)` — a single symbol — so dropping four of
     // five symbols left the hash unchanged, which is the same
     // unbound-input class this changeset is closing.
-    datasetHash: universeHash(ev.loaded.map((d) => ({ symbol: d.symbol, bars: d.bars }))),
+    // `ev.loaded` reports `bars` as a COUNT (d.data.bars.length), not the bar
+    // array, so it cannot be hashed directly — doing so threw "bars is not
+    // iterable" for all 11 strategies, and `run.mjs` still exited 0. The raw
+    // arrays are reachable from `ev.universe`, which collectEvidence returns
+    // for exactly this purpose.
+    datasetHash: universeHash(ev.universe ?? [{ symbol: ev.primary.symbol, bars: ev.primary.bars }]),
     strategyHash: strategyHash(String(ev.signal)),
     // What was actually run, not just what the protocol claims. If a future
     // unbound input appears, a record can no longer silently claim the
@@ -122,14 +127,25 @@ if (process.argv[1] && process.argv[1].endsWith("run.mjs")) {
     : [arg(argv, "--strategy", "sweep-reversal")];
 
   const out = [];
+  const failed = [];
   for (const s of todo) {
     try {
       const r = await runOne({ strategy: s, tf, days, simCfg });
       out.push(r);
       if (todo.length === 1) report(r);
     } catch (e) {
+      // A crashed strategy used to be printed and swallowed: the run then exited
+      // 0, and the summary said "all strategies" over whatever survived. Every
+      // strategy failing on a bad dataset_hash produced a green run that recorded
+      // nothing — the archive check then failed on staleness, pointing at the
+      // protocol hash instead of at the crash. Fail loudly, and exit non-zero.
+      failed.push(s);
       console.error(`${s}: ${e.message}`);
     }
+  }
+  if (failed.length) {
+    console.error(`\n  ${failed.length}/${todo.length} strategy run(s) FAILED: ${failed.join(", ")}`);
+    console.error("  The archive was NOT updated for these. Nothing above is complete.");
   }
 
   if (out.length > 1) {
@@ -146,4 +162,7 @@ if (process.argv[1] && process.argv[1].endsWith("run.mjs")) {
     console.log(`\n  benchmark buy&hold: ${out[0].benchmark.totalReturnPct}%`);
     console.log("  gate requires: " + Object.entries(CRITERIA).map(([k, v2]) => `${k}=${v2}`).join(" "));
   }
+  // A partial run is not a successful run. Exit non-zero so CI and any wrapper
+  // sees it, rather than reporting success over whatever happened to finish.
+  if (failed.length) process.exitCode = 1;
 }

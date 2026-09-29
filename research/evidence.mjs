@@ -499,6 +499,10 @@ export async function collectEvidence({ strategy, tf = "15m", days = 400, simCfg
     strategy, tf, days,
     signal, grid, mod,
     loaded: ok.map((d) => ({ symbol: d.symbol, bars: d.data.bars.length })),
+    // The raw per-symbol bar arrays, for hashing the WHOLE universe. `loaded`
+    // above reports a COUNT, which cannot be fingerprinted; the archive's
+    // dataset_hash must cover every symbol, not just the primary one.
+    universe: ok.map((d) => ({ symbol: d.symbol, bars: d.data.bars })),
     allTrades, perSymbol, perSymbolEquity,
     regimes, volRegimes, benchByRegime, bench,
     agg, mc, wf: wfPrimary, wfPooled, holdout, stress, leakage, ruinSymbols,

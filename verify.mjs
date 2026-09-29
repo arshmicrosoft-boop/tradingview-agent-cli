@@ -16,6 +16,7 @@ import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { verifySealed } from "./research/chain.mjs";
+import { analyseBoundary } from "./research/boundary.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -36,6 +37,7 @@ const suites = [
   ["research/data.mjs",       "data"],
   ["research/risk-engine.mjs","risk engine"],
   ["research/experiment.test.mjs", "protocol binding"],
+  ["research/boundary.mjs", "module boundary"],
   ["research/harness.mjs",    "harness"],
   ["research/gate.mjs",       "gate"],
   ["research/gate-v2.mjs",    "gate v2"],
@@ -72,33 +74,38 @@ try {
 
 console.log("\n=== architectural invariants ===\n");
 
-const researchFiles = walk(join(ROOT, "research"));
-const offenders = [];
-for (const f of researchFiles) {
-  const src = readFileSync(f, "utf8");
-  const re = /(?:^|\n)\s*(?:import[^'"]*from\s*|import\s*\(\s*)["']([^"']+)["']/g;
-  let m;
-  while ((m = re.exec(src))) {
-    const spec = m[1];
-    if (spec.includes("execution") || spec.includes("paper-trade") || spec.includes("launch-tv")) {
-      offenders.push(`${relative(ROOT, f)} -> ${spec}`);
-    }
-  }
-}
-check("research/ never imports execution/", offenders.length === 0, offenders.join("; "));
+// The module boundary, checked on the resolved GRAPH rather than by grepping
+// text. The previous check was a regex for `import ... from "x"` filtered on
+// `spec.includes("execution")`, which missed re-exports, CommonJS requires,
+// case variants (this filesystem is case-insensitive), and any path assembled at
+// runtime; its TradingView twin grepped for the STRINGS "tv.cmd" and ":9222", so
+// reaching TradingView by any other route passed. research/boundary.mjs tokenizes
+// the source, matches the four dependency forms structurally, resolves each
+// specifier on disk, and walks the graph to a fixed point.
+const boundary = analyseBoundary({ root: ROOT, entryDir: "research" });
+check("research/ reaches no execution surface (resolved module graph, transitive)",
+      boundary.violations.length === 0,
+      boundary.violations.length
+        ? boundary.violations.map((v) => `${v.file} -${v.kind}-> ${v.target}`).join("; ")
+        : `${boundary.modules} module(s) walked, no path to execution/ tradingview/ broker/ wallet/`);
+check("  ...and the graph was actually traversed, not silently empty",
+      boundary.modules >= 10, `${boundary.modules} modules`);
+// Runtime-assembled specifiers cannot be resolved to a file, so the honest
+// question is whether their literal PREFIX is safe. An anchored prefix
+// (`./strategies/${id}.mjs`, how research/ loads strategies) is verifiable and
+// allowed; an unanchored one could reach anywhere and is reported.
+const dynUnanchored = boundary.dynamicClassified.filter((d) => d.verdict !== "anchored");
+check("  ...and every runtime-assembled specifier is anchored to a safe prefix",
+      dynUnanchored.length === 0,
+      dynUnanchored.map((d) => `${d.file}: ${d.arg} (${d.verdict})`).join("; "));
+check("  ...and no forbidden execution token appears in a research module",
+      boundary.forbiddenTokens.length === 0,
+      boundary.forbiddenTokens.map((t) => `${t.file}: ${t.token}`).join("; "));
 
 // The execution layer must depend on the research layer, never the reverse.
 const execFiles = walk(join(ROOT, "execution"));
 const execUsesResearch = execFiles.some((f) => readFileSync(f, "utf8").includes("../research/"));
 check("execution/ may import research/ (shares the risk engine)", execUsesResearch);
-
-// No research file may reach a TradingView surface.
-const tvReach = researchFiles.filter((f) => {
-  const src = readFileSync(f, "utf8");
-  return /tv\.cmd|remote-debugging-port|:9222|chrome-remote-interface/.test(src);
-});
-check("research/ cannot reach TradingView", tvReach.length === 0,
-      tvReach.map((f) => relative(ROOT, f)).join("; "));
 
 // Config and audit must exist where both layers expect them.
 // audit.jsonl is append-only runtime state and is not tracked in git, so a

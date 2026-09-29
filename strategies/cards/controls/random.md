@@ -5,7 +5,7 @@ slug: random
 status: falsified
 code: research/strategies/_control_random.mjs
 protocol: v1
-protocol_hash: 31ca181720e76199
+protocol_hash: a23de729e9a08dcd
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 2270
@@ -129,6 +129,18 @@ already unmet, `unmet` holds at 21 — still the most of any run in the repo —
 only `protocol_hash` moves, to `31ca181720e76199`. Trades, profit factor, Sharpe,
 `total_return_pct` and `max_drawdown_pct` are unchanged per-run quantities, so the
 noise-floor calibration this card exists to provide is unaffected.
+
+**Basis note (2026-09-29, second run).** The archive was regenerated again, on a
+**new experiment lineage rather than a threshold change**: `protocol.v1.json`
+became the single source of truth for the experiment, gaining `data.as_of` and
+`risk.allow_fractional`, with its `note` rewritten — so the hash moved to
+`a23de729e9a08dcd` as a consequence of that reorganisation, not of any criterion
+moving. All 19 criteria are unchanged, and every recorded figure on this control
+is identical to the previous run: `unmet` holds at 21 — still the most of any run
+in the repo — trades 2,270, profit factor 0.751, Sharpe −0.057,
+`total_return_pct` (−72.89) and `max_drawdown_pct` (74.33) are unchanged per-run
+quantities, and the verdict is still `fail`. The noise-floor calibration this
+card exists to provide is unaffected.
 
 ### The one thing this card is also evidence for
 

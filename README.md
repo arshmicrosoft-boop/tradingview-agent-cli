@@ -144,26 +144,55 @@ The invariant worth knowing about is the last one. It also fails if any v1 run
 record cites a stale `protocol_hash`, which is what a corrected hash function or
 an edited threshold looks like from the outside.
 
-### What "green" does and does not mean
+### What "green" proves
 
-A green `verify` proves two things, and they are not the same thing:
+A green `verify` is three independent guarantees, each answering a different
+question. All three are enforced mechanically; none relies on discipline.
 
-- **Artifact integrity** — the cards match the records, the records cite the
-  current protocol hash, the history was not overwritten, every record carries a
-  well-formed timestamp.
-- **Experiment reproducibility** — the number in the record can be reproduced
-  from the protocol.
+**1. Artifact integrity — "did someone alter a result?"**
+Every record in the archive is sealed: `rec_hash` covers its own body, `prev_hash`
+covers the record before it, and the first chained record anchors on a hash of
+everything written before the chain existed. Editing, deleting, reordering or
+forging any record breaks the chain. A chain with nothing in it reports as a
+failure, and a strategy whose history was deleted wholesale is caught by walking
+the archive directories rather than the records (the records being what is
+missing). This is the guarantee the protocol hash never gave: that hash covers
+thresholds, not the numbers.
 
-**The second half is not yet proven, and this is the most important open
-integrity gap.** `protocol.v1.json` hashes its `data`, `costs`, `risk`, `split`
-and `regimes` sections, but the v1 pipeline never *reads* them. The experiment is
-actually defined by literals in `evidence.mjs` (`SYMBOLS`, `simCfgFor`) and by
-`process.argv`. Running `npm run research:all -- --risk 0.5` or
-`--equity 99999` produces a materially different book while the record still
-cites the frozen protocol hash, and the parameters that produced the number are
-not recorded in the archive at all. So today **the same hash does not imply the
-same experiment.** Treat "validated" as covering artifact integrity only, until
-the protocol file is made load-bearing.
+**2. Experiment identity — "was this result produced by the experiment it claims?"**
+`protocol.v1.json` is the single source of truth. `research/experiment.mjs`
+resolves every data, risk, cost, split and regime parameter from it, and CLI
+flags may only *reproduce* a protocol value — `--risk 0.5` is refused with a
+message naming the flag, the protocol value, and how to run a different
+experiment. An unknown flag is refused rather than ignored. Every record also
+carries an `experiment_fingerprint` of what was actually resolved, so a record
+states its evidence rather than only its claim.
+
+**3. Dependency isolation — "can research code reach execution code?"**
+`research/boundary.mjs` tokenizes each module, matches the four
+dependency-bearing forms structurally, resolves every specifier on disk, and
+walks the graph transitively. `research/` cannot reach `execution/`,
+`tradingview/`, `broker/` or `wallet/`. This replaced a regex that missed
+re-exports, `require()`, case variants and runtime-built paths, and a
+TradingView check that grepped for the *strings* `"tv.cmd"` and `":9222"` — so
+reaching TradingView any other way passed.
+
+**The residual limit, stated plainly:** the boundary check is a tokenizer, not a
+full ECMAScript AST, and does not attempt to be. A specifier assembled purely at
+runtime from non-literal data is reported rather than assumed safe: anchored
+ones (`./strategies/${id}.mjs`) have their literal prefix checked, unanchored
+ones are flagged. Flow analysis is out of scope.
+
+### What "green" does not prove
+
+- That any strategy is profitable. None is. That is the current result, not a bug.
+- That the two layers are independently implemented. `execution/` imports
+  `research/risk-engine.mjs` deliberately, to share the sizing maths. An
+  independent checker (a separate engine, or an implementation that does not
+  know this one's design) is the only thing that closes that, and it does not
+  exist yet.
+- That the gate is complete in principle. The 19 criteria catch what was thought
+  of; they are not a proof that no other way to be fooled exists.
 
 ## The pipeline
 
@@ -615,20 +644,20 @@ and it says in one line what v1 takes twenty criteria to establish.
 - Any strategy is profitable
 - That these results generalise beyond one 400-day window
 - That a passing strategy would survive live execution
-- **That the run is reproducible from the protocol.** See "What green does and
-  does not mean" above. The protocol file is hashed but not read by the v1
-  path, so `--risk` / `--equity` / `--hold` can change the result without moving
-  the hash. This is the top open integrity gap.
-- **That the archive's contents are tamper-evident.** Every record carries a
-  timestamp and a strategy id, and the writer only ever appends — but no record
-  carries a hash of its own body, so a record edited in place (e.g. flipping the
-  last line to `passed: true`) leaves `verify` green unless a card happens to
-  contradict it. A per-record `rec_hash` chain over `prev_hash` is the fix and
-  is not implemented.
-- That the `research/ cannot reach TradingView` invariant is un-bypassable. It is
-  a regex scan over import statements; it misses `export … from`, `require()`,
-  case variants (the filesystem here is case-insensitive), and any path built at
-  runtime from variables. A module-graph resolution would be the real check.
+- **That `execution/` is independently implemented.** It imports
+  `research/risk-engine.mjs` on purpose, so the backtest and the live order path
+  share one sizing implementation — a bug in that arithmetic moves both together,
+  and a selftest written by the same author is not an independent check. Three
+  equal-weight portfolio implementations inside `research/` already drifted apart
+  before an adversarial review caught it; the same class of error is still
+  possible across the layer boundary. An independent checker is the only real
+  fix, and it does not exist.
+- That the 19 gate criteria are complete in principle. They catch what was
+  thought of. The one bug class found this cycle — a criterion satisfied by a
+  strategy with no edge — was found by adversarial review, not by the gate.
+- That the module-boundary check is sound beyond its stated limits: it is a
+  tokenizer, not a full AST, and a fully runtime-assembled specifier is reported
+  rather than resolved.
 - That the anchored walk-forward actually searched anything, for the **4 of 10
   strategies that declare no parameter grid.** `donchian`, `long-with-stop`,
   `trend-pullback` and `vol-expansion` have one variant, so their folds cannot

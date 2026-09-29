@@ -5,7 +5,7 @@ slug: sma-cross
 status: falsified
 code: research/strategies/sma-cross.mjs
 protocol: v1
-protocol_hash: 31ca181720e76199
+protocol_hash: a23de729e9a08dcd
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 1984
@@ -124,6 +124,18 @@ in a bull regime, so `beats hold in bull` now fails and `unmet` moves 20 → 21;
 `protocol_hash` moves to `31ca181720e76199`. Trades, profit factor, Sharpe,
 `total_return_pct` and `max_drawdown_pct` are unchanged per-run quantities, and
 the verdict is still `fail`.
+
+**Basis note (2026-09-29, second run).** The archive was regenerated again, on a
+**new experiment lineage rather than a threshold change**: `protocol.v1.json`
+became the single source of truth for the experiment, gaining `data.as_of` and
+`risk.allow_fractional`, with its `note` rewritten — so the hash moved to
+`a23de729e9a08dcd` as a consequence of that reorganisation, not of any criterion
+moving. All 19 criteria are unchanged, and every recorded figure on this card is
+identical to the previous run: `unmet` holds at 21, trades 1,984, profit factor
+1.013, Sharpe −0.023, `total_return_pct` (−1.33) and `max_drawdown_pct` (56.91)
+are unchanged per-run quantities, and the verdict is still `fail`. The precision
+this card rests on — 1.013 over 1,984 trades — is exactly the same measurement it
+was before.
 
 ## Why it failed
 

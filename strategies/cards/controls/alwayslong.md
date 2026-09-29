@@ -5,7 +5,7 @@ slug: alwayslong
 status: falsified
 code: research/strategies/_control_alwayslong.mjs
 protocol: v1
-protocol_hash: 31ca181720e76199
+protocol_hash: a23de729e9a08dcd
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 2278
@@ -135,6 +135,17 @@ quantities. **A control gaining a failed criterion is exactly the ordering this
 card exists to demonstrate:** the gate is still rejecting a signal with no
 information in it, and it is still rejecting it harder than it rejects the
 hypotheses.
+
+**Basis note (2026-09-29, second run).** The archive was regenerated again, on a
+**new experiment lineage rather than a threshold change**: `protocol.v1.json`
+became the single source of truth for the experiment, gaining `data.as_of` and
+`risk.allow_fractional`, with its `note` rewritten — so the hash moved to
+`a23de729e9a08dcd` as a consequence of that reorganisation, not of any criterion
+moving. All 19 criteria are unchanged, and every recorded figure on this control
+is identical to the previous run: `unmet` holds at 21, trades 2,278, profit
+factor 0.837, Sharpe −0.028, `total_return_pct` (−55.22) and `max_drawdown_pct`
+(71.41) are unchanged per-run quantities, and the verdict is still `fail`. The
+ordering this card demonstrates survives the reorganisation intact.
 
 ## Why it failed
 

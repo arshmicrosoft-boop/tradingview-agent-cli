@@ -9,7 +9,7 @@ status: falsified
 backlog_id: P-002
 code: research/strategies/vol-normalized-breakout.mjs
 protocol: v1
-protocol_hash: 31ca181720e76199
+protocol_hash: a23de729e9a08dcd
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · leakage clean
 trades: 2583
@@ -250,6 +250,18 @@ of 50, and it is a separate concern from the coverage criterion added alongside
 it. Trades, profit factor, Sharpe, `total_return_pct` (−33.98) and
 `max_drawdown_pct` (54.55) are unchanged per-run quantities on the same
 equal-weight basis, and the verdict is still `fail`.
+
+**Basis note (2026-09-29, second run).** The archive was regenerated again, on a
+**new experiment lineage rather than a threshold change**: `protocol.v1.json`
+became the single source of truth for the experiment, gaining `data.as_of` and
+`risk.allow_fractional`, with its `note` rewritten — so the hash moved to
+`a23de729e9a08dcd` as a consequence of that reorganisation, not of any criterion
+moving. All 19 criteria are unchanged, and every recorded figure on this card is
+identical to the previous run: `unmet` holds at 20, trades 2,583, profit factor
+0.935, Sharpe −0.038, `total_return_pct` (−33.98) and `max_drawdown_pct` (54.55)
+are unchanged per-run quantities on the same equal-weight basis, and the verdict
+is still `fail`. The walk-forward recomputation above is untouched by this run
+and is a separate concern from the protocol reorganisation.
 
 `harness.monteCarlo` was converted on the same basis. It was a 5×-geared pooled
 replay: it compounded five independent 1,000-equity accounts into one curve with

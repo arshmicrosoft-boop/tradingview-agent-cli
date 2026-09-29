@@ -5,7 +5,7 @@ slug: sideways-liquidity-reversal
 status: falsified
 code: research/strategies/sideways-liquidity-reversal.mjs
 protocol: v1
-protocol_hash: 31ca181720e76199
+protocol_hash: a23de729e9a08dcd
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · leakage clean
 trades: 165
@@ -137,6 +137,16 @@ trades at all, so that change costs it nothing: `beats hold in bull` was already
 unmet, `unmet` holds at 19, and only `protocol_hash` moves, to `31ca181720e76199`.
 Trades, profit factor, Sharpe, `total_return_pct` and `max_drawdown_pct` are
 unchanged per-run quantities, and the verdict is still `fail`.
+
+**Basis note (2026-09-29, second run).** The archive was regenerated again, on a
+**new experiment lineage rather than a threshold change**: `protocol.v1.json`
+became the single source of truth for the experiment, gaining `data.as_of` and
+`risk.allow_fractional`, with its `note` rewritten — so the hash moved to
+`a23de729e9a08dcd` as a consequence of that reorganisation, not of any criterion
+moving. All 19 criteria are unchanged, and every recorded figure on this card is
+identical to the previous run: `unmet` holds at 19, trades 165, profit factor
+0.355, Sharpe −0.26, `total_return_pct` (−27.24) and `max_drawdown_pct` (27.6)
+are unchanged per-run quantities, and the verdict is still `fail`.
 
 Two consequences are recorded rather than smoothed over. **The unmet count moved
 from 20 to 19, entirely because the `max drawdown` criterion now passes at 27.6%

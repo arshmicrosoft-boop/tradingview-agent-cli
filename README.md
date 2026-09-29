@@ -247,9 +247,10 @@ current results.
 hypothesis, which is why the tested count is seven and not eight.
 
 ² `sideways-liquidity-reversal` trades 165 times, so it fails the ≥500 minimum
-on sample size alone. Its t is the worst in the table *and* the most honest:
-after de-clustering, the trailing-window statistic it was built on measured
-t = −1.38, not the +8.99 the raw overlapping samples claimed (AGENT.md §6.14).
+on sample size alone. Its t is not the worst in the table — `sweep-reversal`
+sits lower at −5.46 — but its de-clustering story is the most honest: the
+trailing-window statistic it was built on measured t = −1.38, not the +8.99 the
+raw overlapping samples claimed (AGENT.md §6.14).
 
 ³ `vol-normalized-breakout` (P-002) has the **fewest unmet criteria in the
 table — 19, tied with `trend-pullback`, `donchian` and
@@ -461,7 +462,7 @@ Plus three things neither version had:
 | Criterion | Bar | What it prevents |
 |---|---|---|
 | anchored walk-forward consistency | ≥ 60% | an edge live in only some quarters |
-| walk-forward fold coverage | ≥ 75% | **100% consistency achieved by going silent** |
+| walk-forward fold coverage | ≥ 100% | **100% consistency achieved by going silent** — raised from 75% on 2026-09-28, which still permitted one entirely dead fold of four |
 | OOS/IS efficiency ratio | ≥ 0.40 | in-sample-only parameters |
 | mean OOS fold Sharpe | ≥ 0.30 | folds that are individually worthless |
 | bootstrap P(profitable) | ≥ 90% | an edge that depends on the realised trade order |

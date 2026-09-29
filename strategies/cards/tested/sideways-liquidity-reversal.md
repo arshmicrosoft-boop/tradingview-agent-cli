@@ -5,7 +5,7 @@ slug: sideways-liquidity-reversal
 status: falsified
 code: research/strategies/sideways-liquidity-reversal.mjs
 protocol: v1
-protocol_hash: ab8d990e445b2927
+protocol_hash: 31ca181720e76199
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · leakage clean
 trades: 165
@@ -127,6 +127,16 @@ model moved to an equal-weight additive book — return is the mean of the five
 per-symbol returns, max drawdown is the drawdown of the pointwise-averaged
 equity curve. The superseded figures (−81.88% and 45.9%) came from a 5×-geared
 pooled replay and must not be mixed with these.
+
+**Basis note (2026-09-29).** The v1 archive was regenerated under a protocol
+carrying a 19th threshold constant, `MIN_WF_COVERAGE: 100` — the walk-forward
+fold coverage criterion, which passes on all ten cards — and with the
+`beats hold in <reg>` benchmark corrected to compound rather than sum, which
+lifted the bull-regime hold bar from 0.88% to 630.63%. This card takes no bull
+trades at all, so that change costs it nothing: `beats hold in bull` was already
+unmet, `unmet` holds at 19, and only `protocol_hash` moves, to `31ca181720e76199`.
+Trades, profit factor, Sharpe, `total_return_pct` and `max_drawdown_pct` are
+unchanged per-run quantities, and the verdict is still `fail`.
 
 Two consequences are recorded rather than smoothed over. **The unmet count moved
 from 20 to 19, entirely because the `max drawdown` criterion now passes at 27.6%

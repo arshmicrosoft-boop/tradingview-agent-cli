@@ -64,6 +64,12 @@ const HYPOTHESIS_FIELDS = [
 const RESULT_KEYS = [
   "protocol", "protocol_hash", "tested_at", "dataset",
   "trades", "profit_factor", "sharpe", "max_drawdown_pct", "total_return_pct",
+  // `gate` and `unmet` are the card's own verdict. They were OPTIONAL: a card
+  // that omitted them skipped the verdict check entirely, so deleting two lines
+  // from every card disarmed the one check that reconciles "this strategy
+  // failed" against the archive. A missing key must now be an error, not a
+  // silent pass.
+  "gate", "unmet",
 ];
 
 // ---------------------------------------------------------------- parsing
@@ -165,9 +171,13 @@ function checkAgainstRuns(fm, file, dir) {
   if (fm.protocol_hash && latest.protocol_hash && fm.protocol_hash !== latest.protocol_hash) {
     mismatches.push(`protocol_hash: card ${fm.protocol_hash} vs run ${latest.protocol_hash}`);
   }
+  // The verdict. Unconditional: an absent `gate`/`unmet` is a mismatch, never
+  // a skip (see RESULT_KEYS). A card cannot pass by declining to state it.
   const expectGate = latest.passed ? "pass" : "fail";
-  if (fm.gate && fm.gate !== expectGate) mismatches.push(`gate: card ${fm.gate} vs run ${expectGate}`);
-  if (fm.unmet !== undefined && Number(fm.unmet) !== latest.failed.length) {
+  if (fm.gate === undefined) mismatches.push("gate absent");
+  else if (fm.gate !== expectGate) mismatches.push(`gate: card ${fm.gate} vs run ${expectGate}`);
+  if (fm.unmet === undefined) mismatches.push("unmet absent");
+  else if (Number(fm.unmet) !== latest.failed.length) {
     mismatches.push(`unmet: card ${fm.unmet} vs run ${latest.failed.length}`);
   }
 
@@ -213,7 +223,13 @@ for (const d of CARD_DIRS) {
       for (const k of RESULT_KEYS) {
         check(`${file}: has result key ${k}`, fm[k] !== undefined && fm[k] !== "");
       }
+      // A `code:` path that points at a deleted file is a card describing a
+      // strategy that no longer exists. Presence was checked, existence was
+      // not, so a card could cite research/strategies/ghost.mjs forever.
       check(`${file}: has code path`, Boolean(fm.code) && fm.code !== "none", fm.code);
+      if (fm.code) {
+        check(`${file}: code path exists`, existsSync(join(ROOT, fm.code)), fm.code);
+      }
       checkAgainstRuns(fm, file, d.replace("cards/", ""));
     }
     if (fm.status === "proposed" || fm.status === "queued") {

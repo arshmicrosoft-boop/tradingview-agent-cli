@@ -14,6 +14,7 @@ import { PROTOCOL } from "./protocol.mjs";
  *   MIN_SHARPE      1.0     Sharpe on per-trade returns
  *   MAX_DD          35      max drawdown %
  *   MIN_WF          50      % of walk-forward folds profitable
+ *   MIN_WF_COVERAGE 100     % of walk-forward folds that traded at all
  *   MAX_MC_BREACH   25      % chance of breaching the drawdown threshold
  *
  * Regime is labelled from the data, not asserted: a bar is BULL/BEAR if the
@@ -470,6 +471,16 @@ export function evaluateGate({
     ["sharpe",           metrics.sharpe,            `> ${C.MIN_SHARPE}`,  Number(metrics.sharpe) > C.MIN_SHARPE],
     ["max drawdown %",   metrics.maxDrawdownPct,    `< ${C.MAX_DD}`,      metrics.maxDrawdownPct < C.MAX_DD],
     ["walk-forward consistency %", wf.consistency,  `>= ${C.MIN_WF}`,     (wf.consistency ?? 0) >= C.MIN_WF],
+    // A strategy with no opinion for an out-of-sample fold must not be able to
+    // score 100% consistency across the folds that did fire. harness.walkForward
+    // now divides by every fold (a silent fold counts as non-profitable) and
+    // reports foldCoveragePct; this criterion fails the strategy outright rather
+    // than letting a 3-of-4 result clear the >= 50 consistency bar. Mirrors
+    // MIN_WF_COVERAGE in protocol.v2.json. Verified: a signal trading 3 of 4
+    // folds reports consistency 75 (which still clears MIN_WF=50) and coverage
+    // 75, so only this criterion catches it.
+    ["walk-forward fold coverage %", wf.foldCoveragePct, `>= ${C.MIN_WF_COVERAGE}`,
+      (wf.foldCoveragePct ?? 0) >= C.MIN_WF_COVERAGE],
     ["P(dd breach) %",   mc.probabilityOfBreachingThreshold, `< ${C.MAX_MC_BREACH}`, mc.probabilityOfBreachingThreshold < C.MAX_MC_BREACH],
   ];
 
@@ -762,7 +773,7 @@ if (process.argv[1] && process.argv[1].endsWith("gate.mjs")) {
     const bookMetrics = { trades: 900, profitFactor: 1.8, sharpe: 1.6, maxDrawdownPct: bookSt.maxDrawdownPct, totalReturnPct: bookSt.totalReturnPct };
     const base = {
       metrics: bookMetrics,
-      mc: { probabilityOfBreachingThreshold: 6 }, wf: { consistency: 80 },
+      mc: { probabilityOfBreachingThreshold: 6 }, wf: { consistency: 80, foldCoveragePct: 100 },
       regimes: { bull: { trades: 300, pnl: 3000 }, bear: { trades: 300, pnl: 2000 }, sideways: { trades: 300, pnl: 2500 } },
       volRegimes: { high: { trades: 400, pnl: 40 }, low: { trades: 500, pnl: 37 } },
       bench: { calmar: 2.0 },
@@ -813,7 +824,7 @@ if (process.argv[1] && process.argv[1].endsWith("gate.mjs")) {
   // criterion compared against nothing at all.
   const good = {
     metrics: { trades: 900, profitFactor: 1.8, sharpe: 1.6, maxDrawdownPct: 18, totalReturnPct: 70 },
-    mc: { probabilityOfBreachingThreshold: 6 }, wf: { consistency: 80 },
+    mc: { probabilityOfBreachingThreshold: 6 }, wf: { consistency: 80, foldCoveragePct: 100 },
     regimes: { bull: { trades: 300, pnl: 3000 }, bear: { trades: 300, pnl: 2000 }, sideways: { trades: 300, pnl: 2500 } },
     volRegimes: { high: { trades: 400, pnl: 40 }, low: { trades: 500, pnl: 37 } },
     bench: { calmar: 1.0 },
@@ -868,6 +879,26 @@ if (process.argv[1] && process.argv[1].endsWith("gate.mjs")) {
   check("surviving only trivial costs FAILS the cost floor",
         evaluateGate({ ...good, stress: { survivalRate: 0.9, maxSurvivableFeeBps: 10, maxSurvivableSlippageBps: 5 } }).passed === false);
   check("a missing cost stress FAILS", evaluateGate({ ...good, stress: null }).passed === false);
+
+  // --- walk-forward fold coverage (MIN_WF_COVERAGE)
+  // The loophole this closes: consistency used to be scored only over the folds
+  // that fired, so a strategy with no opinion for one fold of four reported 100.
+  // harness.walkForward now divides by every fold, which turns that into 75 --
+  // and 75 still clears MIN_WF=50. Only the coverage bar rejects it, so the bar
+  // has to exist.
+  const oneDeadFold = { ...good, wf: { consistency: 75, foldCoveragePct: 75, foldsSilent: 1 } };
+  check("a strategy silent for one out-of-sample fold FAILS",
+        evaluateGate(oneDeadFold).passed === false);
+  check("  ...specifically on fold coverage, not on consistency",
+        evaluateGate(oneDeadFold).failedNames.some((f) => /fold coverage/i.test(f)));
+  check("  ...and consistency alone would have let it through (75 >= 50)",
+        evaluateGate(oneDeadFold).failedNames.every((f) => !/consistency/i.test(f)));
+  check("trading in every fold PASSES coverage",
+        evaluateGate({ ...good, wf: { consistency: 75, foldCoveragePct: 100, foldsSilent: 0 } }).passed === true);
+  check("partial coverage below the bar FAILS",
+        evaluateGate({ ...good, wf: { consistency: 100, foldCoveragePct: 75 } }).passed === false);
+  check("a missing coverage figure FAILS rather than defaulting to a pass",
+        evaluateGate({ ...good, wf: { consistency: 100 } }).passed === false);
 
   // --- previously-established gates must still hold
   const weak = { ...good, metrics: { trades: 120, profitFactor: 1.1, sharpe: 0.3, maxDrawdownPct: 22, totalReturnPct: 5 },

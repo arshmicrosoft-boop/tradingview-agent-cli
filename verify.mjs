@@ -47,8 +47,15 @@ const suites = [
 for (const [file, label, extra = []] of suites) {
   try {
     const out = execFileSync("node", [join(ROOT, file), ...extra], { encoding: "utf8", timeout: 120000 });
-    const m = out.match(/(\d+) passed, (\d+) failed/);
-    check(`${label} selftest`, m && m[2] === "0", m ? `${m[1]}/${+m[1] + +m[2]}` : out.slice(-80));
+    // Take the LAST summary, not the first: a suite that prints its own banner
+    // containing "N passed, M failed" would otherwise be judged on the banner.
+    const all = [...out.matchAll(/(\d+) passed, (\d+) failed/g)];
+    const m = all.length ? all[all.length - 1] : null;
+    // A suite that runs ZERO checks is not a pass. `m && m[2] === "0"` reported
+    // "0 passed, 0 failed" as green, which is indistinguishable from a suite
+    // that never ran its assertions.
+    check(`${label} selftest`, !!m && m[2] === "0" && +m[1] > 0,
+      m ? (+m[1] === 0 ? "ran 0 checks" : `${m[1]}/${+m[1] + +m[2]}`) : out.slice(-80));
   } catch (e) {
     check(`${label} selftest`, false, (e.stdout || e.message || "").toString().slice(-100));
   }
@@ -174,11 +181,18 @@ const latestPerStrategy = (recs) => {
   return by;
 };
 
+// The v1 archive-integrity checks must run UNCONDITIONALLY. They were previously
+// nested inside `if (existsSync(v2Archive)) { ... }`, so deleting (or renaming, or
+// failing to clone) research/registry-v2/ silently skipped every check in this
+// block — the v1 latest-hash check, the superseded-retention check, and the
+// ts/strategy_id tamper-evidence check all disappeared, and `verify` exited 0 on
+// a fully tampered v1 archive. The v2 checks below are now gated on v2's own
+// presence; the v1 checks are not gated on anything.
 const v2Archive = join(ROOT, "research", "registry-v2");
-  if (existsSync(v2Archive)) {
-    const v2Loaded = loadArchive("registry-v2");
-    const v2Runs = v2Loaded.recs;
-  const { PROTOCOL, PROTOCOL_V2 } = await import(pathToFileURL(join(ROOT, "research", "protocol.mjs")).href);
+const v2Present = existsSync(v2Archive);
+const v2Loaded = v2Present ? loadArchive("registry-v2") : { recs: [], at: [] };
+const v2Runs = v2Loaded.recs;
+const { PROTOCOL, PROTOCOL_V2 } = await import(pathToFileURL(join(ROOT, "research", "protocol.mjs")).href);
   // Same rule as the v1 check below, applied to v2: the LATEST v2 run per
   // strategy must cite the current v2 hash, and no v2 run may carry the v1
   // hash. Older v2 records are allowed to cite older v2 hashes — a re-run
@@ -196,11 +210,13 @@ const v2Archive = join(ROOT, "research", "registry-v2");
   const v2ByStrategy = latestPerStrategy(v2Runs);
   const v2Stale = [...v2ByStrategy.values()].filter((r) => r.protocol_hash !== PROTOCOL_V2.protocol_hash);
   const v2CarriesV1 = v2Runs.filter((r) => r.protocol_hash === PROTOCOL.protocol_hash);
-  check("v2 runs never carry the v1 protocol hash; latest v2 run per strategy cites the current v2 hash",
-    v2Runs.length === 0 || (v2CarriesV1.length === 0 && v2Stale.length === 0),
-    v2CarriesV1.length ? `${v2CarriesV1.length} v2 record(s) wrongly carry the v1 hash`
-      : v2Stale.length ? `${v2Stale.map((r) => r.strategy_id).join(", ")} - re-run npm run research:all:v2`
-      : `${v2ByStrategy.size} strategies current, ${v2Runs.length} total v2 records in the archive`);
+  if (v2Present) {
+    check("v2 runs never carry the v1 protocol hash; latest v2 run per strategy cites the current v2 hash",
+      v2Runs.length === 0 || (v2CarriesV1.length === 0 && v2Stale.length === 0),
+      v2CarriesV1.length ? `${v2CarriesV1.length} v2 record(s) wrongly carry the v1 hash`
+        : v2Stale.length ? `${v2Stale.map((r) => r.strategy_id).join(", ")} - re-run npm run research:all:v2`
+        : `${v2ByStrategy.size} strategies current, ${v2Runs.length} total v2 records in the archive`);
+  }
   check("v1 and v2 protocol hashes are distinct",
     PROTOCOL.protocol_hash !== PROTOCOL_V2.protocol_hash,
     `v1 ${PROTOCOL.protocol_hash} / v2 ${PROTOCOL_V2.protocol_hash}`);
@@ -212,7 +228,8 @@ const v2Archive = join(ROOT, "research", "registry-v2");
   // when. Pruning stale records because a hash function was corrected would
   // destroy the evidence the hash exists to provide — the old records are the
   // proof that the old (broken) hash was in use.
-  const byStrategy = latestPerStrategy(v1Runs);
+  const v1ByStrategy = latestPerStrategy(v1Runs);
+  const byStrategy = v1ByStrategy;
   const stale = [...byStrategy.values()].filter((r) => r.protocol_hash !== PROTOCOL.protocol_hash);
   check("the latest v1 run per strategy cites the current v1 protocol hash", stale.length === 0,
     stale.length ? `${stale.map((r) => r.strategy_id).join(", ")} — re-run npm run research:all`
@@ -266,7 +283,14 @@ const v2Archive = join(ROOT, "research", "registry-v2");
       : ambiguous.length
       ? `${ambiguous.length} ambiguous ts tie(s): ${ambiguous.slice(0, 3).join("; ")}${ambiguous.length > 3 ? " ..." : ""}`
       : `${v1Runs.length + v2Runs.length} records (${v1Runs.length} v1 + ${v2Runs.length} v2) carry a well-formed ts and strategy_id`);
-}
+
+// A run that silently skipped its own archive checks must never report green.
+// The v1 checks above are deliberately un-gated, so this is a standing
+// assertion that the block executed and found a non-empty v1 archive to check —
+// the exact condition that a deleted/misnamed registry/ would violate.
+check("archive-integrity checks actually ran against a non-empty v1 archive",
+  v1Runs.length > 0 && v1ByStrategy.size > 0,
+  v1Runs.length === 0 ? "v1 archive is EMPTY — no integrity check could have run" : `${v1Runs.length} v1 records across ${v1ByStrategy.size} strategies`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -5,7 +5,7 @@ slug: random
 status: falsified
 code: research/strategies/_control_random.mjs
 protocol: v1
-protocol_hash: ab8d990e445b2927
+protocol_hash: 31ca181720e76199
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 2270
@@ -119,6 +119,17 @@ depend on the portfolio basis, so the noise-floor calibration this card exists
 to provide is unaffected. The `symbols passing alone` row above reads 0/5 on the
 current run, as the registry records it.
 
+**Basis note (2026-09-29).** The v1 archive was regenerated under a protocol
+carrying a 19th threshold constant, `MIN_WF_COVERAGE: 100` — the walk-forward
+fold coverage criterion, which passes on all ten cards — and with the
+`beats hold in <reg>` benchmark corrected to compound rather than sum, which
+lifted the bull-regime hold bar from 0.88% to 630.63%. This control takes no
+bull trades at all, so that change costs it nothing: `beats hold in bull` was
+already unmet, `unmet` holds at 21 — still the most of any run in the repo — and
+only `protocol_hash` moves, to `31ca181720e76199`. Trades, profit factor, Sharpe,
+`total_return_pct` and `max_drawdown_pct` are unchanged per-run quantities, so the
+noise-floor calibration this card exists to provide is unaffected.
+
 ### The one thing this card is also evidence for
 
 This strategy was run **twice**. Both runs produced *identical* metrics — 2,270
@@ -184,7 +195,7 @@ they are the calibration that gives 1.013 its meaning.
   nothing.** It is not "the best candidate" — it is a draw that landed slightly
   high, and the t-stat of −1.02 says the measurement cannot distinguish it from
   the controls.
-- **More unmet criteria than any real strategy.** 22 versus 20. The controls
+- **More unmet criteria than any real strategy.** 21 versus 20. The controls
   fail the gate harder than the hypotheses do, which is the correct ordering and
   a direct check that the criteria are not secretly rewarding trade count.
 - **The double run was worth the time it cost.** It surfaced the leakage

@@ -55,6 +55,36 @@ export function realisedVol(bars, lookback = 50) {
 }
 
 /**
+ * Parse a monetary amount that may arrive as a formatted string.
+ *
+ * `Number("1,234.56")` is NaN, and the idiom `Number(x) || 0` turned that NaN
+ * into a clean zero. On the live order path that meant an account holding
+ * $1,234.56 of margin was treated as holding none, so the cumulative-exposure
+ * cap was never even constructed. paper-trade.mjs captures the ticket's raw
+ * text with a regex that permits thousands separators, so the fail-open fired
+ * on any exposure >= $1,000.
+ *
+ * Throws on anything that is not a finite number. Callers on the order path
+ * catch and REJECT; they must never fall back to a default.
+ */
+export function parseAmount(value, label = "amount") {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`${label} is not finite: ${value}`);
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    // Number("") is 0 and Number(" ") is 0 — an empty margin field must be a
+    // rejection, not a clean zero, or the exposure cap is skipped again.
+    if (trimmed === "") throw new Error(`${label} is an empty string, not an amount`);
+    const n = Number(trimmed.replace(/[,\s]/g, ""));
+    if (!Number.isFinite(n)) throw new Error(`${label} is not a parseable number: ${JSON.stringify(value)}`);
+    return n;
+  }
+  throw new Error(`${label} has non-numeric type ${typeof value}`);
+}
+
+/**
  * Size a position from measured volatility.
  *
  * equity         account equity in USD
@@ -71,6 +101,18 @@ export function sizePosition({
   const notes = [];
   const reject = (code, detail) => ({ ok: false, code, detail, notes });
 
+  // Fail closed on a non-finite cap. `caps.reduce((a, b) => b.qty < a.qty ? b : a)`
+  // never selects a NaN cap (NaN < x is always false) AND the post-hoc
+  // `notional > maxNotional` clamp is `250 > NaN`, also false — so a single
+  // typo in config/risk.json silently disabled the cap and the order reported
+  // the cap as honoured. loadRiskConfig copies raw JSON with no validation.
+  for (const [name, v] of Object.entries({
+    maxNotional, maxMargin, leverage, riskPct, stopAtrMult, existingExposure,
+  })) {
+    if (!Number.isFinite(v)) {
+      return reject("INVALID_RISK_CONFIG", `${name} is not a finite number (${v}) — refusing to size`);
+    }
+  }
   if (!(equity > 0)) return reject("NO_EQUITY", `equity is ${equity}`);
   if (!(price > 0)) return reject("NO_PRICE", `price is ${price}`);
   if (!(atrValue > 0)) return reject("NO_ATR", `ATR is ${atrValue} — volatility unknown, refusing to size`);
@@ -78,6 +120,11 @@ export function sizePosition({
   const riskAmount = equity * riskPct;
   const stopDist = stopAtrMult * atrValue;
   const stopPrice = side === "sell" ? price + stopDist : price - stopDist;
+  // NOTE: the stop-reachability / stop-side checks live in `evaluate`, NOT here.
+  // `sizePosition` is a pure sizing function and is called by the backtest
+  // harness; enforcing "stop must be > 0" here would refuse to open a position
+  // during a crash, silently changing historical backtest results. The live
+  // order path validates the stop in `evaluate` before sizing is trusted.
 
   // Each cap is expressed in units; the binding one wins.
   const caps = [
@@ -141,6 +188,19 @@ export function evaluate({ symbol, side, thesis, bars, account, cfg }) {
   const a = atr(bars, cfg.atr_period ?? 14);
   const rv = realisedVol(bars, 50);
 
+  // Cumulative exposure must be parsed, not coerced. The previous
+  // `(Number(x) || 0) + (Number(y) || 0)` mapped a formatted string like
+  // "1,234.56" to 0, so the headroom cap was skipped entirely and an account
+  // with real margin was approved for a full order. Fail closed: an
+  // unparseable margin rejects the order; it never becomes zero.
+  let existingExposure;
+  try {
+    existingExposure = parseAmount(account.ordersMargin ?? 0, "ordersMargin")
+                     + parseAmount(account.accountMargin ?? 0, "accountMargin");
+  } catch (e) {
+    return { approved: false, code: "INVALID_ACCOUNT_MARGIN", detail: e.message, symbol, side, thesis, atr: a, realisedVol: rv };
+  }
+
   const size = sizePosition({
     equity: account.equity,
     price,
@@ -151,13 +211,29 @@ export function evaluate({ symbol, side, thesis, bars, account, cfg }) {
     maxNotional: cfg.max_order_notional_usd ?? 25,
     maxMargin: cfg.max_total_margin_usd ?? 25,
     leverage: cfg.max_leverage ?? 10,
-    existingExposure: (Number(account.ordersMargin) || 0) + (Number(account.accountMargin) || 0),
+    existingExposure,
     allowFractional: cfg.allow_fractional ?? false,
   });
 
   if (!size.ok) {
     return { approved: false, code: size.code, detail: size.detail, symbol, side, thesis, atr: a, realisedVol: rv };
   }
+
+  // Stop reachability and side — a LIVE-ORDER concern, enforced here rather
+  // than in sizePosition (which the backtest also calls). A long whose ATR stop
+  // sits at or below zero has a stop the market can never reach, yet the order
+  // would still report "risk within budget" because riskAmount looked fine.
+  if (!(size.stopPrice > 0)) {
+    return { approved: false, code: "STOP_UNREACHABLE", symbol, side, thesis, atr: a, realisedVol: rv,
+      detail: `stop ${size.stopPrice} is at or below zero for a ${side} at ${price} ` +
+              `(ATR ${a?.toExponential?.(2)}). A stop the market cannot reach is not a stop.` };
+  }
+  const stopOnCorrectSide = side === "sell" ? size.stopPrice > price : size.stopPrice < price;
+  if (!stopOnCorrectSide) {
+    return { approved: false, code: "STOP_WRONG_SIDE", symbol, side, thesis, atr: a, realisedVol: rv,
+      detail: `stop ${size.stopPrice} is not on the correct side of entry ${price} for a ${side}` };
+  }
+
   return {
     approved: true,
     symbol, side, thesis,
@@ -256,6 +332,47 @@ if (process.argv[1] && process.argv[1].endsWith("risk-engine.mjs")) {
         `wild=${wildRisk.qty} calm=${calmRisk.qty}`);
   check("risk is actually spent up to budget", calmRisk.riskAmount > calmRisk.riskBudget * 0.5,
         `${calmRisk.riskAmount} / ${calmRisk.riskBudget}`);
+
+  // --- fail-closed: the three ways a formatted input could delete a cap -------
+  // Each of these previously produced an APPROVED order that ignored a limit
+  // which was in force. They are pinned here so the fail-open cannot return.
+  const ohlc = series(0.8);
+  const acct = (o = {}) => ({ equity: 10000, price: 20, ordersMargin: 0, accountMargin: 0, ...o });
+
+  // C1: a comma-formatted margin became 0, so the exposure cap was never built.
+  const commaMargin = run(ohlc, acct({ ordersMargin: "1,234.56", accountMargin: "0.00" }));
+  check("a comma-formatted margin does not vanish into zero", commaMargin.approved === false,
+        commaMargin.approved ? `APPROVED qty=${commaMargin.qty}` : `REJECT ${commaMargin.code}`);
+  check("  ...and the same account with a parsed margin is treated identically",
+        run(ohlc, acct({ ordersMargin: 1234.56 })).approved === commaMargin.approved);
+  for (const bad of ["", "   ", "abc", "1.2.3", true, null, undefined, NaN]) {
+    check(`parseAmount(${JSON.stringify(bad)}) throws rather than defaulting`,
+          (() => { try { parseAmount(bad, "m"); return false; } catch { return true; } })());
+  }
+  check("parseAmount strips thousands separators", parseAmount("1,234.56", "m") === 1234.56);
+
+  // C2: a stop at or below zero, or on the wrong side of entry. Enforced in
+  // `evaluate` (the live-order path), so these go through run() rather than
+  // sizePosition(). A cheap instrument with a wide ATR puts the stop below zero.
+  const wideAtr = series(4.0);
+  const cheapStop = run(wideAtr, { equity: 10000, price: 0.5, ordersMargin: 0, accountMargin: 0 });
+  check("a stop at or below zero is refused", cheapStop.approved === false && cheapStop.code === "STOP_UNREACHABLE",
+        cheapStop.approved ? "APPROVED" : `REJECT ${cheapStop.code}`);
+  const inverted = run(ohlc, acct(), "buy", { ...cfg, stop_atr_mult: 0 });   // zero stop dist => stop sits AT entry
+  check("a stop on the wrong side of entry is refused",
+        inverted.approved === false && inverted.code === "STOP_WRONG_SIDE",
+        inverted.approved ? "APPROVED" : `REJECT ${inverted.code}`);
+
+  // M8: a non-finite cap was silently skipped by the reduce AND by the
+  // post-hoc clamp, so the order reported a cap it was not obeying.
+  for (const [k, v] of Object.entries({
+    max_order_notional_usd: NaN, max_total_margin_usd: NaN,
+    max_leverage: NaN, risk_per_trade_pct: NaN, stop_atr_mult: NaN,
+  })) {
+    const r = run(ohlc, acct(), "buy", { ...cfg, [k]: v });
+    check(`a non-finite ${k} refuses the order`, r.approved === false && r.code === "INVALID_RISK_CONFIG",
+          r.approved ? "APPROVED" : `REJECT ${r.code}`);
+  }
 
   console.log(`\n  ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

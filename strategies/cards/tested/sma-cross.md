@@ -5,7 +5,7 @@ slug: sma-cross
 status: falsified
 code: research/strategies/sma-cross.mjs
 protocol: v1
-protocol_hash: ab8d990e445b2927
+protocol_hash: 31ca181720e76199
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 1984
@@ -15,7 +15,7 @@ sharpe: -0.023
 max_drawdown_pct: 56.91
 total_return_pct: -1.33
 gate: fail
-unmet: 20
+unmet: 21
 ---
 
 # sma crossover
@@ -89,7 +89,7 @@ Grid tested: `fast ∈ {15,20,25}` × `slow ∈ {40,50,60}`.
 
 ## Result under v1
 
-20 criteria unmet, including every statistical and every robustness bar. The
+21 criteria unmet, including every statistical and every robustness bar. The
 failures that matter:
 
 | criterion | bar | actual |
@@ -114,6 +114,16 @@ pointwise-averaged equity curve. The superseded figures (−99.36% and 82.75%)
 came from a 5×-geared pooled replay and must not be mixed with these. Trades,
 profit factor, Sharpe and the `fail` verdict are unchanged: they are per-run
 quantities and do not depend on the portfolio basis.
+
+**Basis note (2026-09-29).** The v1 archive was regenerated under a protocol
+carrying a 19th threshold constant, `MIN_WF_COVERAGE: 100` — the walk-forward
+fold coverage criterion, which passes on all ten cards — and with the
+`beats hold in <reg>` benchmark corrected to compound rather than sum, which
+lifted the bull-regime hold bar from 0.88% to 630.63%. This card returns 39.71%
+in a bull regime, so `beats hold in bull` now fails and `unmet` moves 20 → 21;
+`protocol_hash` moves to `31ca181720e76199`. Trades, profit factor, Sharpe,
+`total_return_pct` and `max_drawdown_pct` are unchanged per-run quantities, and
+the verdict is still `fail`.
 
 ## Why it failed
 

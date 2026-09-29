@@ -120,7 +120,7 @@ if (process.argv[1] && process.argv[1].endsWith("gate-v2.mjs")) {
   const ev = {
     agg: { trades: 900, profitFactor: 1.8, sharpe: 1.6, maxDrawdownPct: 18, totalReturnPct: 70 },
     mc: { probabilityOfBreachingThreshold: 6 },
-    wf: { consistency: 80 },
+    wf: { consistency: 80, foldCoveragePct: 100 },
     regimes: { bull: { trades: 300, pnl: 3000 }, bear: { trades: 300, pnl: 2000 }, sideways: { trades: 300, pnl: 2500 } },
     volRegimes: { high: { trades: 400, pnl: 40 }, low: { trades: 500, pnl: 37 } },
     bench: { calmar: 1.0 },
@@ -138,7 +138,10 @@ if (process.argv[1] && process.argv[1].endsWith("gate-v2.mjs")) {
     initialEquity: 1000,
   };
   const goodRobust = {
-    wf: { consistency: 80, foldCoverage: 100, efficiencyRatio: 0.72, meanOosSharpe: 0.55 },
+    // `foldCoverage` is the v2 name; `foldCoveragePct` is the v1 name for the
+  // same quantity. The same object is evaluated by both gates, so a fixture
+  // that satisfies only one of them fails the other on MIN_WF_COVERAGE.
+  wf: { consistency: 80, foldCoverage: 100, foldCoveragePct: 100, efficiencyRatio: 0.72, meanOosSharpe: 0.55 },
     mc: { pProfitable: 97, pSharpePositive: 95 },
     dsr: { ok: true, dsr: 0.988 },
     fill: { pBreach: 6 },

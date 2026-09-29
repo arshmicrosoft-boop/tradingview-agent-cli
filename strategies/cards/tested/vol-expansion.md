@@ -5,7 +5,7 @@ slug: vol-expansion
 status: falsified
 code: research/strategies/vol-expansion.mjs
 protocol: v1
-protocol_hash: ab8d990e445b2927
+protocol_hash: 31ca181720e76199
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 686
@@ -120,6 +120,16 @@ pooled replay and must not be mixed with these. Trades, profit factor, Sharpe
 and the `fail` verdict are unchanged: they are per-run quantities and do not
 depend on the portfolio basis, and the account still ruins on this run, so the
 reading below stands.
+
+**Basis note (2026-09-29).** The v1 archive was regenerated under a protocol
+carrying a 19th threshold constant, `MIN_WF_COVERAGE: 100` — the walk-forward
+fold coverage criterion, which passes on all ten cards — and with the
+`beats hold in <reg>` benchmark corrected to compound rather than sum, which
+lifted the bull-regime hold bar from 0.88% to 630.63%. This card takes no bull
+trades at all, so that change costs it nothing: `beats hold in bull` was already
+unmet, `unmet` holds at 20, and only `protocol_hash` moves, to `31ca181720e76199`.
+Trades, profit factor, Sharpe, `total_return_pct` and `max_drawdown_pct` are
+unchanged per-run quantities, and the verdict is still `fail`.
 
 ## Why it failed
 

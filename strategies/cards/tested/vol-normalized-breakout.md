@@ -9,7 +9,7 @@ status: falsified
 backlog_id: P-002
 code: research/strategies/vol-normalized-breakout.mjs
 protocol: v1
-protocol_hash: ab8d990e445b2927
+protocol_hash: 31ca181720e76199
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · leakage clean
 trades: 2583
@@ -19,7 +19,7 @@ sharpe: -0.038
 max_drawdown_pct: 54.55
 total_return_pct: -33.98
 gate: fail
-unmet: 19
+unmet: 20
 ---
 
 # volatility-normalized breakout
@@ -127,15 +127,17 @@ Grid tested: `k ∈ {0.10, 0.25, 0.50, 1.00}` × `lookback ∈ {10, 20, 40}`.
 
 ## Result under v1
 
-19 criteria unmet. The information is not in the criterion list, it is in the
+20 criteria unmet. The information is not in the criterion list, it is in the
 ladder.
 
 ### Accepted methodology change: the walk-forward criterion is now measured
 
-**This card reads 19 unmet, not 18, because the gate's `walk-forward
-consistency %` criterion was recomputed on a corrected basis. That change was
-accepted deliberately. It is not a threshold nudge and not a regression, and it
-is recorded here so the next reader does not "fix" it back.**
+**The walk-forward recomputation took this card from 18 unmet to 19**, because
+the gate's `walk-forward consistency %` criterion was recomputed on a corrected
+basis. (The card now reads 20 unmet, because a later regeneration failed a
+different criterion; see *Basis note* below.) That change was accepted
+deliberately. It is not a threshold nudge and not a regression, and it is
+recorded here so the next reader does not "fix" it back.**
 
 What the criterion used to read. v1 computed it with an inline splitter that cut
 the **pooled** five-symbol trade stream into four chunks and scored each fold as
@@ -191,12 +193,14 @@ no other strategy's aggregate numbers, because those are also being regenerated.
 `protocol.mjs:53` hashes the protocol JSON only, so `protocol_hash` covers
 **thresholds**, not **computation**; `verify.mjs:155` checks only that the latest
 run per strategy cites the current hash. A metric can therefore change under an
-unchanged `ab8d990e445b2927` without `npm run verify` failing. The card's
-`protocol_hash` field below is the same before and after this change, and its
-correctness is unaffected — the thresholds it pins are exactly the thresholds
-that ran. The limitation itself is documented in the "WHAT THE HASH ACTUALLY
-COVERS" blocks in `gate.mjs`, `evidence.mjs` and `registry.mjs`; see also the
-root `README.md` §"Why the gate fails" defect 3.
+unchanged `ab8d990e445b2927` — the hash that was current when the walk-forward
+criterion was recomputed — without `npm run verify` failing. The card's
+`protocol_hash` field has since moved to `31ca181720e76199`, but only because a
+*threshold* was added on 2026-09-29, not because of this change; the recomputation
+itself moved nothing that the hash could see, and the thresholds the card pins are
+exactly the thresholds that ran. The limitation itself is documented in the "WHAT
+THE HASH ACTUALLY COVERS" blocks in `gate.mjs`, `evidence.mjs` and `registry.mjs`;
+see also the root `README.md` §"Why the gate fails" defect 3.
 
 ### Portfolio basis: equal-weight additive
 
@@ -232,6 +236,20 @@ values they replace were −99.61% and 83.97%. Nothing in this card's *finding*
 depends on them — the verdict is `fail` either way, and the argument rests on
 the profit-factor ladder and the trade counts, which are per-run quantities and
 are unaffected by the portfolio basis.
+
+**Basis note (2026-09-29).** The v1 archive was regenerated again, under a
+protocol carrying a 19th threshold constant — `MIN_WF_COVERAGE: 100`, the
+walk-forward fold coverage criterion, which passes on all ten cards — and with
+the `beats hold in <reg>` benchmark corrected to compound rather than sum, which
+lifted the bull-regime hold bar from 0.88% to 630.63%. The compounding
+correction is the whole of the movement on this card: it withdraws the
+`beats hold in bull` pass recorded above, so `unmet` moves 19 → 20, and
+`protocol_hash` moves to `31ca181720e76199`. The walk-forward recomputation
+described above is unaffected — it still reads 0, still against a `MIN_WF` bar
+of 50, and it is a separate concern from the coverage criterion added alongside
+it. Trades, profit factor, Sharpe, `total_return_pct` (−33.98) and
+`max_drawdown_pct` (54.55) are unchanged per-run quantities on the same
+equal-weight basis, and the verdict is still `fail`.
 
 `harness.monteCarlo` was converted on the same basis. It was a 5×-geared pooled
 replay: it compounded five independent 1,000-equity accounts into one curve with
@@ -269,17 +287,20 @@ is what happened.
 | max drawdown | < 35% | 54.55% |
 | max survivable cost | ≥ 25 bps | **0 bps** |
 | account survived | yes | **RUINED** |
-| beats hold in bull | required | **passed** |
+| beats hold in bull | required | **failed** — 28.10% vs hold 630.63% |
 
 Buy&hold returned +696.23% over the same window. This returned −33.98%.
 
 Two details worth keeping. The family sits at PF 0.90–0.96, which is *above* the
 random control (0.751) and above always-long (0.837) but below 1.0 — so the
 Donchian breakout carries a little information and still loses, which is a more
-precise statement than "no signal". And `beats hold in bull` passed: with 874
-bull-regime trades the strategy lost less than simply holding through a bull
-market. Neither fact makes it tradeable, but both locate the loss somewhere
-other than direction.
+precise statement than "no signal". The second detail has since been withdrawn:
+with 874 bull-regime trades this card returned 28.10% against a hold bar of
+630.63%, so `beats hold in bull` **failed** — it had read *passed* under the
+superseded non-compounding bar of 0.88%, and it was the only criterion on this
+card that the 2026-09-29 benchmark correction took away. Neither fact makes the
+strategy tradeable, and with the second one gone the loss is no longer locatable
+somewhere other than direction.
 
 ## Why it failed
 

@@ -5,7 +5,7 @@ slug: trend-pullback
 status: falsified
 code: research/strategies/trend-pullback.mjs
 protocol: v1
-protocol_hash: ab8d990e445b2927
+protocol_hash: 31ca181720e76199
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 1557
@@ -15,7 +15,7 @@ sharpe: -0.016
 max_drawdown_pct: 42.63
 total_return_pct: -6.68
 gate: fail
-unmet: 19
+unmet: 20
 ---
 
 # trend pullback continuation
@@ -119,6 +119,16 @@ and the `fail` verdict are unchanged: they are per-run quantities and do not
 depend on the portfolio basis. The shallowest portfolio return in the set is not
 a positive result — the account still ruins, and the sign of the edge is still
 negative.
+
+**Basis note (2026-09-29).** The v1 archive was regenerated under a protocol
+carrying a 19th threshold constant, `MIN_WF_COVERAGE: 100` — the walk-forward
+fold coverage criterion, which passes on all ten cards — and with the
+`beats hold in <reg>` benchmark corrected to compound rather than sum, which
+lifted the bull-regime hold bar from 0.88% to 630.63%. This card returns 8.07%
+in a bull regime, so `beats hold in bull` now fails and `unmet` moves 19 → 20;
+`protocol_hash` moves to `31ca181720e76199`. Trades, profit factor, Sharpe,
+`total_return_pct` and `max_drawdown_pct` are unchanged per-run quantities, and
+the verdict is still `fail`.
 
 ## Why it failed
 

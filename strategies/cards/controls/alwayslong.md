@@ -5,7 +5,7 @@ slug: alwayslong
 status: falsified
 code: research/strategies/_control_alwayslong.mjs
 protocol: v1
-protocol_hash: ab8d990e445b2927
+protocol_hash: 31ca181720e76199
 tested_at: 2026-09-27
 dataset: BTC/ETH/DOGE/SOL/ZEC · 15m · 400d · 38,401 bars each · 0 gaps
 trades: 2278
@@ -14,7 +14,7 @@ sharpe: -0.028
 max_drawdown_pct: 71.41
 total_return_pct: -55.22
 gate: fail
-unmet: 20
+unmet: 21
 ---
 
 # always long control
@@ -96,7 +96,7 @@ Exit is owned by the simulator — 2×ATR stop, 96-bar time out.
 
 ## Result under v1
 
-**Failed, as it must.** 20 criteria unmet.
+**Failed, as it must.** 21 criteria unmet.
 
 | criterion | bar | actual |
 |---|---|---|
@@ -122,6 +122,19 @@ and the `fail` verdict are unchanged: they are per-run quantities and do not
 depend on the portfolio basis. The account still reaches the circuit breaker
 (`account survived (no ruin)` and `symbols ruined` are both still unmet), so
 this control still fails exactly as it must.
+
+**Basis note (2026-09-29).** The v1 archive was regenerated under a protocol
+carrying a 19th threshold constant, `MIN_WF_COVERAGE: 100` — the walk-forward
+fold coverage criterion, which passes on all ten cards — and with the
+`beats hold in <reg>` benchmark corrected to compound rather than sum, which
+lifted the bull-regime hold bar from 0.88% to 630.63%. This control returns
+10.11% in a bull regime, so `beats hold in bull` now fails and `unmet` moves
+20 → 21; `protocol_hash` moves to `31ca181720e76199`. Trades, profit factor,
+Sharpe, `total_return_pct` and `max_drawdown_pct` are unchanged per-run
+quantities. **A control gaining a failed criterion is exactly the ordering this
+card exists to demonstrate:** the gate is still rejecting a signal with no
+information in it, and it is still rejecting it harder than it rejects the
+hypotheses.
 
 ## Why it failed
 

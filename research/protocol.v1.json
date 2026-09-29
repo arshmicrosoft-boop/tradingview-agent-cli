@@ -46,6 +46,7 @@
     "MIN_SHARPE": 1.0,
     "MAX_DD": 35,
     "MIN_WF": 50,
+    "MIN_WF_COVERAGE": 100,
     "MAX_MC_BREACH": 25,
     "MIN_TEST_TRADES": 60,
     "MIN_TEST_SHARPE": 0.5,

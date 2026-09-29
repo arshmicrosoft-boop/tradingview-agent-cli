@@ -12,6 +12,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, rmSync } from "node:fs";
+import { seal, verifyChain } from "./chain.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -100,6 +101,13 @@ export function record({ strategyId, version = 1, protocolHash, datasetHash, str
       .map((c) => `${c.name}=${c.actual} (bar ${c.expected})`),
     notes,
   };
+  // Seal the record into the strategy's hash chain before writing. See
+  // research/chain.mjs: each record carries rec_hash over its own body and
+  // prev_hash over the record before it, anchored on the pre-chain history.
+  // This is what makes an in-place edit of an archived line detectable — the
+  // protocol hash covers thresholds, and nothing covered the numbers.
+  const existing = readJsonl(join(dir, "runs.jsonl"));
+  Object.assign(entry, seal(existing, entry));
   appendFileSync(join(dir, "runs.jsonl"), JSON.stringify(entry) + "\n");
   return entry;
 }

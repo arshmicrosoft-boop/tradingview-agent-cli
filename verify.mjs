@@ -15,6 +15,7 @@ import { readdirSync, readFileSync, statSync, mkdirSync, openSync, closeSync, ex
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
+import { verifySealed } from "./research/chain.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -283,6 +284,56 @@ const { PROTOCOL, PROTOCOL_V2 } = await import(pathToFileURL(join(ROOT, "researc
       : ambiguous.length
       ? `${ambiguous.length} ambiguous ts tie(s): ${ambiguous.slice(0, 3).join("; ")}${ambiguous.length > 3 ? " ..." : ""}`
       : `${v1Runs.length + v2Runs.length} records (${v1Runs.length} v1 + ${v2Runs.length} v2) carry a well-formed ts and strategy_id`);
+
+// Archive hash chain. The protocol hash covers THRESHOLDS; it never covered the
+// numbers. Until this check, a record's body was unbound: editing a line in
+// place — flipping the last record of a strategy to `passed: true` — left the
+// whole suite green unless a card happened to contradict it. Each record now
+// carries rec_hash over its own body and prev_hash over the record before it,
+// anchored on the pre-chain history, so an edit, a deletion, a reordering or a
+// forged append all break the chain. Records written before the chain existed
+// have no rec_hash and are covered as a group by the anchor.
+{
+  const chainProblems = [];
+  let chainedTotal = 0, prechainTotal = 0;
+  for (const [label, { recs, at }] of [["v1", v1Loaded], ["v2", v2Loaded]]) {
+    const byDir = new Map();
+    recs.forEach((r, i) => {
+      if (!byDir.has(r.strategy_id)) byDir.set(r.strategy_id, []);
+      byDir.get(r.strategy_id).push(r);
+    });
+    for (const [sid, rows] of byDir) {
+      // verifySealed, not verifyChain: an empty or unchained file verifies clean
+      // under the link check alone, which is how deleting a strategy's whole
+      // history once read as a pass.
+      const res = verifySealed(rows);
+      chainedTotal += res.chained;
+      prechainTotal += res.prechain;
+      for (const p of res.problems) chainProblems.push(`${label} ${sid}: ${p}`);
+    }
+    // A strategy directory that exists but holds no parseable record at all is a
+    // deletion that byDir cannot see, because byDir is built FROM the records.
+    for (const entry of readdirSync(join(ROOT, "research", label === "v1" ? "registry" : "registry-v2"), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const f = join(ROOT, "research", label === "v1" ? "registry" : "registry-v2", entry.name, "runs.jsonl");
+      if (existsSync(f) && readFileSync(f, "utf8").split("\n").filter(Boolean).length === 0) {
+        chainProblems.push(`${label} ${entry.name}: runs.jsonl is empty — its history was deleted`);
+      }
+    }
+  }
+  // A chain with nothing in it is not a pass. Before the backfill every record
+  // was pre-chain, so this reported "0 chained, 94 covered by anchor" and read
+  // green while editing or deleting any of them was still undetectable — the
+  // `0 passed, 0 failed` tautology this session has been removing elsewhere.
+  // Report the coverage honestly and fail when the chain is empty.
+  check("archive hash chain is intact (edit / delete / reorder / forge all detectable)",
+    chainProblems.length === 0 && chainedTotal > 0,
+    chainProblems.length
+      ? `${chainProblems.length} broken link(s): ${chainProblems.slice(0, 3).join("; ")}${chainProblems.length > 3 ? " ..." : ""}`
+      : chainedTotal === 0
+      ? `NO CHAINED RECORDS - ${prechainTotal} pre-chain record(s) are not tamper-evident; run npm run research:all to seal them`
+      : `${chainedTotal} chained record(s) verified, ${prechainTotal} pre-chain record(s) covered by anchor`);
+}
 
 // A run that silently skipped its own archive checks must never report green.
 // The v1 checks above are deliberately un-gated, so this is a standing

@@ -12,9 +12,13 @@
  * measurements. This file decides, records and reports — nothing else.
  */
 
+import { readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { collectEvidence, SYMBOLS, windowFor, simCfgFor } from "./evidence.mjs";
+import { resolveExperiment, simCfgFromExperiment, experimentFingerprint } from "./experiment.mjs";
 import { evaluateGate, CRITERIA } from "./gate.mjs";
-import { PROTOCOL, datasetHash, strategyHash } from "./protocol.mjs";
+import { PROTOCOL, datasetHash, universeHash, strategyHash } from "./protocol.mjs";
 import { record, currentState } from "./registry.mjs";
 
 const arg = (argv, f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
@@ -25,6 +29,12 @@ const arg = (argv, f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i 
 // difference rather than the bug it is.
 export const v1Window = windowFor;
 export const v1SimCfg = simCfgFor;
+
+/** Every strategy implementation on disk, from the directory rather than a list. */
+export function allStrategyIds() {
+  const dir = join(dirname(fileURLToPath(import.meta.url)), "strategies");
+  return readdirSync(dir).filter((f) => f.endsWith(".mjs")).map((f) => f.replace(/\.mjs$/, ""));
+}
 
 // Exported so the command centre in frontend/ can call a backtest in-process on
 // a worker thread instead of parsing this file's stdout. Purely additive: the
@@ -47,8 +57,16 @@ export async function runOne({ strategy, tf, days, simCfg }) {
   const recordEntry = record({
     strategyId: strategy, version: Number(arg(process.argv, "--version", 1)),
     protocolHash: PROTOCOL.protocol_hash,
-    datasetHash: datasetHash(ev.primary),
+    // The dataset hash covers EVERY symbol loaded, not just the primary one.
+    // It was `datasetHash(ev.primary)` — a single symbol — so dropping four of
+    // five symbols left the hash unchanged, which is the same
+    // unbound-input class this changeset is closing.
+    datasetHash: universeHash(ev.loaded.map((d) => ({ symbol: d.symbol, bars: d.bars }))),
     strategyHash: strategyHash(String(ev.signal)),
+    // What was actually run, not just what the protocol claims. If a future
+    // unbound input appears, a record can no longer silently claim the
+    // protocol it was not run under.
+    experimentFingerprint: experimentFingerprint(resolveExperiment(process.argv.slice(2))),
     metrics: ev.agg, verdict,
     notes: `${days}d ${tf} across ${ev.symbolCount} symbols; leakage ${ev.leakage.pass ? "clean" : "FAILED"}`,
   });
@@ -86,13 +104,21 @@ function report(r) {
 
 const argv = process.argv.slice(2);
 if (process.argv[1] && process.argv[1].endsWith("run.mjs")) {
-  const tf = arg(argv, "--tf", "15m");
-  const days = Number(arg(argv, "--days", 400));
-  const simCfg = v1SimCfg(argv);
+  // The experiment is resolved from the protocol FIRST, before anything runs.
+  // `resolveExperiment` throws if any flag departs from protocol.v1.json, so a
+  // run cannot be produced that the protocol does not describe. tf/days/simCfg
+  // are now read off the resolved experiment rather than defaulted here.
+  const X = resolveExperiment(argv);
+  const tf = X.timeframe;
+  const days = X.period_days;
+  const simCfg = simCfgFromExperiment(X);
 
+  // The strategy list is read from disk, not hardcoded. The literal list
+  // omitted `ma-cross-bb-flip`, which has a strategy file, records in both
+  // archives, and no card — so `npm run research:all` could never clear its
+  // staleness, and nothing reported the gap. run-v2.mjs already did this.
   const todo = argv.includes("--all")
-    ? ["long-with-stop", "sma-cross", "donchian", "sweep-reversal", "trend-pullback", "vol-expansion",
-       "vol-normalized-breakout", "sideways-liquidity-reversal", "_control_alwayslong", "_control_random"]
+    ? allStrategyIds()
     : [arg(argv, "--strategy", "sweep-reversal")];
 
   const out = [];

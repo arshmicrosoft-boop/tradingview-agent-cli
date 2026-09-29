@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { PROTOCOL } from "./protocol.mjs";
+import { experimentFromProtocol } from "./experiment.mjs";
 
 /**
  * gate.mjs — the research gate.
@@ -71,10 +72,24 @@ export const CRITERIA = PROTOCOL.criteria;
  * real regime would invent exposure that never existed and flatter any
  * strategy that happens to trade early.
  */
-export function labelRegimes(bars, {
-  trendLen = 200, slopeLen = 50, bullSlope = 0.004, bearSlope = -0.004,
-  volLen = 100, volHighPct = 0.70,
-} = {}) {
+// Regime labelling decides which trades count toward "beats hold in <reg>",
+// so these six numbers change the verdict. They were literal defaults here while
+// `protocol.regimes` sat in the hashed JSON unread — the exact pattern
+// experiment.mjs exists to end. They now default to the protocol's values.
+// Callers may still pass an explicit override, which is how the selftests build
+// synthetic regimes; the RUNNERS never do, so a run cannot depart from the
+// protocol here.
+const REGIME_DEFAULTS = (() => {
+  const r = experimentFromProtocol();
+  return {
+    trendLen: r.trendLen, slopeLen: r.slopeLen,
+    bullSlope: r.bullSlope, bearSlope: r.bearSlope,
+    volLen: r.volLen, volHighPct: r.volHighPct,
+  };
+})();
+
+export function labelRegimes(bars, opts = {}) {
+  const { trendLen, slopeLen, bullSlope, bearSlope, volLen, volHighPct } = { ...REGIME_DEFAULTS, ...opts };
   const n = bars.length;
   const directional = new Array(n).fill(null);
   const volatility = new Array(n).fill(null);

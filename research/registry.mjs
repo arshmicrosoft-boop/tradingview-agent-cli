@@ -51,7 +51,7 @@ function readJsonl(p) {
 }
 
 /** Record one evaluation. `archive` defaults to v1. */
-export function record({ strategyId, version = 1, protocolHash, datasetHash, strategyHash, metrics, verdict, notes = "", archive = "v1" }) {
+export function record({ strategyId, version = 1, protocolHash, datasetHash, strategyHash, experimentFingerprint, metrics, verdict, notes = "", archive = "v1" }) {
   const dir = dirFor(strategyId, archive);
   const entry = {
     ts: new Date().toISOString(),
@@ -99,6 +99,11 @@ export function record({ strategyId, version = 1, protocolHash, datasetHash, str
     failed_detail: (verdict?.checks ?? [])
       .filter((c) => !c.ok)
       .map((c) => `${c.name}=${c.actual} (bar ${c.expected})`),
+    // What was actually run, not just which protocol claims to describe it.
+    // `protocol_hash` is the identity the runner asserts; this is the evidence
+    // of what it resolved. If an unbound input is ever reintroduced, a record
+    // can no longer silently claim the protocol it was not run under.
+    ...(experimentFingerprint ? { experiment_fingerprint: experimentFingerprint } : {}),
     notes,
   };
   // Seal the record into the strategy's hash chain before writing. See

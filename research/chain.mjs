@@ -220,6 +220,36 @@ if (process.argv[1] && process.argv[1].endsWith("chain.mjs")) {
         shortened.problems.some((p) => /were deleted/.test(p)));
   check("verifySealed passes a healthy sealed archive", verifySealed(hist).ok === true);
 
+  // A record gains fields over time (experiment_fingerprint was added long
+  // after the first records existed). The chain hashes the record BODY, so a
+  // field added to an EXISTING record breaks its rec_hash — which is correct and
+  // is exactly why the archive is append-only: new fields go on NEW records, and
+  // re-sealing history is a deliberate migration (chain-backfill.mjs) that
+  // proves it changed nothing else. This row pins that distinction so a future
+  // reader does not "fix" a broken chain by rewriting it.
+  const gained = { ...hist[2], experiment_fingerprint: "abc" };
+  check("adding a field to an existing record breaks its rec_hash",
+        entryHash(gained) !== entryHash(hist[2]));
+  check("  ...so a schema change requires re-sealing, not silent acceptance",
+        verifyChain(hist.map((r, i) => (i === 2 ? gained : r))).ok === false);
+  // Re-sealing must walk the WHOLE tail, not just the edited record: record 3's
+  // prev_hash still points at record 2's old rec_hash, so patching one link
+  // leaves the chain broken. That is the correct, conservative behaviour.
+  check("  ...and patching only that link does NOT restore the chain",
+        verifyChain(hist.map((r, i) => (i === 2 ? { ...gained, ...seal(hist.slice(0, 2), gained) } : r))).ok === false);
+  const tail = [...hist.slice(0, 2), gained];
+  const resealed = [...hist.slice(0, 2)];
+  for (let i = 2; i < hist.length; i++) {
+    const r = i === 2 ? gained : hist[i];
+    const s = { ...r, ...seal(resealed, r) };
+    resealed.push(s);
+  }
+  check("  ...re-sealing the entire tail does restore it",
+        verifyChain(resealed).ok === true, `tail=${tail.length} resealed=${resealed.length}`);
+  check("  ...and the re-seal changed nothing outside the chain + the new field",
+        JSON.stringify({ ...gained, prev_hash: 0, rec_hash: 0 })
+        === JSON.stringify({ ...hist[2], experiment_fingerprint: "abc", prev_hash: 0, rec_hash: 0 }));
+
   // A first-ever record (no history) anchors at GENESIS, and two different
   // strategies must not share that first prev_hash by accident.
   const freshA = { ...body(1), ...seal([], body(1)) };

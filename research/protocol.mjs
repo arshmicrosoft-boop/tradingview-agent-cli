@@ -73,6 +73,28 @@ export function datasetHash(bars) {
   return h.digest("hex").slice(0, 16);
 }
 
+/**
+ * Dataset fingerprint over the WHOLE universe, not one symbol.
+ *
+ * The runners used to call `datasetHash(ev.primary)` — a single symbol — so a
+ * record could be produced from four symbols instead of five and the
+ * `dataset_hash` would not move. That is the same unbound-input class the
+ * protocol-binding work exists to close: the record claimed an identity its
+ * contents did not support. Each symbol's bars are hashed in sorted symbol
+ * order, so the fingerprint is stable across runs and independent of load order.
+ */
+export function universeHash(perSymbol) {
+  const h = createHash("sha256");
+  const rows = [...perSymbol].sort((a, b) => (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
+  for (const { symbol, bars } of rows) {
+    h.update(`#${symbol}\n`);
+    for (const b of bars) {
+      h.update(`${b.time}|${b.open}|${b.high}|${b.low}|${b.close}|${b.volume}\n`);
+    }
+  }
+  return h.digest("hex").slice(0, 16);
+}
+
 /** Stable fingerprint of a strategy's source, so results tie to exact code. */
 export function strategyHash(src) {
   return createHash("sha256").update(src).digest("hex").slice(0, 16);

@@ -43,12 +43,17 @@
  * See the CRITERIA comment in gate.mjs for the full statement.
  */
 
+import { experimentFromProtocol, simCfgFromExperiment, resolveExperiment } from "./experiment.mjs";
 import { loadMany } from "./data.mjs";
 import { simulate, metrics, monteCarlo, walkForward, holdoutEvaluate, costStress } from "./harness.mjs";
 import { labelRegimes, regimeSummary, benchmarkPerRegime, equalWeightBook, equalWeightPath, pathStats } from "./gate.mjs";
 import { auditLeakage } from "./leakage.mjs";
 
-export const SYMBOLS = ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "SOLUSDT", "ZECUSDT"];
+// The symbol universe is a protocol value, not a literal. It used to be a
+// hardcoded array here while protocol.v1.json carried its own `data.symbols`
+// that nothing read — so the two could disagree with no check, and the hash
+// moved when the JSON was edited while the run kept using this list.
+export const SYMBOLS = experimentFromProtocol().symbols;
 
 // Bars per day, derived from the timeframe.
 //
@@ -128,20 +133,20 @@ export function alignByTime(curves, axis) {
  * as a bug in either file.
  */
 export function windowFor(days, argv = []) {
-  const arg = (a, f, d) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : d; };
-  const to = Math.floor(Date.parse(arg(argv, "--to", "2026-09-27T00:00:00Z")) / 1000);
-  return { to, from: to - days * 86400 };
+  // The window END is a protocol value (`data.as_of`). It was a string literal
+  // in a default argument here, so `protocol.v1.json` had no way to state it
+  // and moving the window could not move the hash.
+  const x = resolveExperiment(argv);
+  const to = Math.floor(Date.parse(x.as_of) / 1000);
+  return { to, from: to - x.period_days * 86400 };
 }
 
 export function simCfgFor(argv = []) {
-  const arg = (a, f, d) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : d; };
-  return {
-    equity: Number(arg(argv, "--equity", 1000)),
-    riskPct: Number(arg(argv, "--risk", 0.01)),
-    maxHoldBars: Number(arg(argv, "--hold", 96)),
-    warmup: 250,
-    ruinEquityPct: 0.2,
-  };
+  // Every field below used to be a default argument or a literal here. A CLI
+  // flag could change the experiment without the protocol, and therefore
+  // without the hash, ever knowing. resolveExperiment refuses any flag that
+  // departs from the protocol, so this is now a pure projection of it.
+  return simCfgFromExperiment(resolveExperiment(argv));
 }
 
 /**

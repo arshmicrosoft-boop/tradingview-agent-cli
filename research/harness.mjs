@@ -22,18 +22,34 @@
 
 import { load } from "./data.mjs";
 import { atr, sizePosition } from "./risk-engine.mjs";
+import { experimentFromProtocol } from "./experiment.mjs";
 
+// Simulator defaults come from the protocol, not from a literal here. This
+// object used to hardcode equity/risk/fee/slippage/leverage AND disagree with
+// protocol.v1.json on two values: `maxHoldBars` 40 here vs 96 in the protocol,
+// and `warmup` 60 here vs 250. The runners always passed an explicit cfg built
+// from simCfgFor, so the disagreement was invisible — but it meant the
+// simulator's own fallback was a second, un-hashed definition of the
+// experiment. Any caller that relied on the fallback (a selftest, a future
+// entry point) silently ran a different experiment than the protocol describes.
+const P = experimentFromProtocol();
 const DEFAULTS = {
-  equity: 1000,          // paper-equivalent starting equity for the sim
-  riskPct: 0.01,         // 1% risk per trade
-  stopAtrMult: 2,
-  atrPeriod: 14,
-  leverage: 10,
-  allowFractional: true,
-  feeBps: 10,            // 0.10% taker, per side
-  slippageBps: 5,        // 0.05% adverse, per side
-  maxHoldBars: 40,
-  warmup: 60,            // bars reserved for indicator warm-up
+  equity: P.equity,              // paper-equivalent starting equity for the sim
+  riskPct: P.riskPct,            // risk per trade
+  stopAtrMult: P.stopAtrMult,
+  atrPeriod: P.atrPeriod,
+  leverage: P.leverage,
+  allowFractional: P.allowFractional,
+  feeBps: P.feeBps,              // per side
+  slippageBps: P.slippageBps,    // adverse, per side
+  maxHoldBars: P.maxHoldBars,
+  warmup: P.warmup,              // bars reserved for indicator warm-up
+  // NOTE: `ruinEquityPct` is deliberately NOT defaulted from the protocol.
+  // DEFAULTS never had it, and the selftest fixtures that exercise the ruin
+  // close-out depend on its absence (they pass it explicitly when they want it).
+  // Adding it silently gave every fixture a 20% ruin floor and broke three
+  // exit-path tests. The runners pass it from simCfgFor, which does read the
+  // protocol, so the experiment is still fully bound.
 };
 
 // --------------------------------------------------------------- simulator
@@ -795,7 +811,17 @@ if (IS_HARNESS && process.argv[2] !== "run") {
 
   // A deliberately trivial signal: always long.
   const alwaysLong = () => ({ side: "buy" });
-  const up = mk(400, 0.6), down = mk(400, -0.6), flat = mk(400, 0.0);
+  // These fixtures are 400 bars. DEFAULTS.warmup is now the protocol's 250
+// (it used to be a literal 60 here), so a 400-bar series leaves only 150 bars
+// to trade and the exit-path fixtures below stopped producing trades at all.
+// The fix is to size the fixtures to the warmup they actually need, not to
+// soften the protocol: a simulator that silently trades nothing is exactly the
+// failure this session has been removing.
+const up = mk(400, 0.6), down = mk(400, -0.6), flat = mk(400, 0.0);
+// Exit-path fixtures get a SHORT warmup so the behaviour under test (ruin
+// close-out, open_at_end) is reached in a short series. Declared here rather
+// than defaulted, so the test states its own assumption.
+const EXIT_CFG = { warmup: 20 };
 
   const rUp = simulate({ bars: up, signal: alwaysLong });
   const mUp = metrics({ trades: rUp.trades, equityCurve: rUp.equityCurve, initialEquity: DEFAULTS.equity });
@@ -803,7 +829,7 @@ if (IS_HARNESS && process.argv[2] !== "run") {
   check("a rising market with a long signal is profitable", mUp.totalReturnPct > 0, `${mUp.totalReturnPct}%`);
   check("reports drawdown >= 0", mUp.maxDrawdownPct >= 0, `${mUp.maxDrawdownPct}%`);
 
-  const rDown = simulate({ bars: down, signal: alwaysLong });
+  const rDown = simulate({ bars: down, signal: alwaysLong, cfg: EXIT_CFG });
   const mDown = metrics({ trades: rDown.trades, equityCurve: rDown.equityCurve, initialEquity: DEFAULTS.equity });
   check("a falling market with a long signal loses", mDown.totalReturnPct < 0, `${mDown.totalReturnPct}%`);
 
@@ -881,7 +907,7 @@ if (IS_HARNESS && process.argv[2] !== "run") {
   // flat.
   {
     const longDown = mk(1500, -0.6);
-    const ruinedRun = simulate({ bars: longDown, signal: alwaysLong, cfg: { ruinEquityPct: 0.9 } });
+    const ruinedRun = simulate({ bars: longDown, signal: alwaysLong, cfg: { ...EXIT_CFG, ruinEquityPct: 0.9 } });
     check("a ruined run reports the ruin",
       ruinedRun.ruined && ruinedRun.ruinAtBar != null && ruinedRun.trades.some((t) => t.reason === "ruin"),
       `ruinAtBar=${ruinedRun.ruinAtBar}, ${ruinedRun.trades.length} trades`);

@@ -2,13 +2,14 @@
   "protocol": "v1",
   "frozen": true,
   "frozen_at": "2026-09-27",
-  "note": "Machine-readable evaluation contract. gate.mjs LOADS its criteria from here, so this file is binding, not documentation. Changing a value changes protocol_hash, which is recorded in every run. That is deliberate: you should not be able to move a threshold after seeing results without it being visible.",
+  "note": "Machine-readable evaluation contract, and the SINGLE SOURCE OF TRUTH for the experiment. gate.mjs loads its criteria from here and research/experiment.mjs resolves every data/risk/cost/regime parameter from here — nothing is read from a literal in code or from a command-line flag. Changing any value changes protocol_hash, which is recorded in every run, and every record also carries experiment_fingerprint so a record can never claim a protocol it was not run under. CLI flags that name a parameter are accepted only when they REPRODUCE the value below; a flag that departs from it is refused. That is deliberate: you should not be able to move a threshold, or the data window, or the position sizing, after seeing results, without it being visible.",
 
   "data": {
     "provider": "binance",
     "timeframe": "15m",
     "symbols": ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "SOLUSDT", "ZECUSDT"],
     "period_days": 400,
+    "as_of": "2026-09-27T00:00:00Z",
     "min_symbols": 5,
     "require_zero_gaps": true
   },
@@ -34,7 +35,8 @@
     "max_leverage": 10,
     "max_hold_bars": 96,
     "ruin_equity_pct": 0.2,
-    "max_open_positions": 1
+    "max_open_positions": 1,
+    "allow_fractional": true
   },
 
   "criteria": {

@@ -35,6 +35,7 @@ console.log("=== layer selftests ===\n");
 const suites = [
   ["research/data.mjs",       "data"],
   ["research/risk-engine.mjs","risk engine"],
+  ["research/experiment.test.mjs", "protocol binding"],
   ["research/harness.mjs",    "harness"],
   ["research/gate.mjs",       "gate"],
   ["research/gate-v2.mjs",    "gate v2"],

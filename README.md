@@ -135,7 +135,7 @@ JSON block in step 4 of the prompt above, then restart the agent.
 npm run verify
 ```
 
-Runs 12 selftests (including 422 checks over the 15 strategy cards) and 13
+Runs 13 selftests (including **452** checks over the 15 strategy cards) and 14
 architectural invariants, including `research/ never imports execution/`,
 `research/ cannot reach TradingView`, and — the one that matters — every tested
 strategy card reconciled against its actual run record.
@@ -143,6 +143,27 @@ strategy card reconciled against its actual run record.
 The invariant worth knowing about is the last one. It also fails if any v1 run
 record cites a stale `protocol_hash`, which is what a corrected hash function or
 an edited threshold looks like from the outside.
+
+### What "green" does and does not mean
+
+A green `verify` proves two things, and they are not the same thing:
+
+- **Artifact integrity** — the cards match the records, the records cite the
+  current protocol hash, the history was not overwritten, every record carries a
+  well-formed timestamp.
+- **Experiment reproducibility** — the number in the record can be reproduced
+  from the protocol.
+
+**The second half is not yet proven, and this is the most important open
+integrity gap.** `protocol.v1.json` hashes its `data`, `costs`, `risk`, `split`
+and `regimes` sections, but the v1 pipeline never *reads* them. The experiment is
+actually defined by literals in `evidence.mjs` (`SYMBOLS`, `simCfgFor`) and by
+`process.argv`. Running `npm run research:all -- --risk 0.5` or
+`--equity 99999` produces a materially different book while the record still
+cites the frozen protocol hash, and the parameters that produced the number are
+not recorded in the archive at all. So today **the same hash does not imply the
+same experiment.** Treat "validated" as covering artifact integrity only, until
+the protocol file is made load-bearing.
 
 ## The pipeline
 
@@ -385,7 +406,7 @@ passes. Relaxing a bar to go green is the exact thing the hash exists to stop.
 ## The gate
 
 v1 is `research/gate.mjs` reading `research/protocol.v1.json`. Nothing is an
-edge until it clears all 21:
+edge until it clears all 19:
 
 | Criterion | Bar | What it prevents |
 |---|---|---|
@@ -399,6 +420,7 @@ edge until it clears all 21:
 | **Sharpe LCB (95%)** | > 0.3 | a big Sharpe *estimated from few trades* |
 | max drawdown | < 35% | — |
 | walk-forward consistency | ≥ 50% | tuning to the sample |
+| **walk-forward fold coverage** | **= 100%** | **scoring 100% consistency by never trading** — a strategy silent for one fold of four used to be excluded from the denominator, scoring 100 and clearing the 50% bar. It now counts that fold as a failure (75%), and this criterion rejects partial coverage outright. Added 2026-09-28; mirrors `MIN_WF_COVERAGE` in v2. |
 | P(dd ≥ 20%) | < 25% | surviving only the lucky orderings |
 | holdout trades | ≥ 60 | conclusions from an empty test window |
 | holdout Sharpe | > 0.5 | in-sample-only edge |
@@ -593,12 +615,30 @@ and it says in one line what v1 takes twenty criteria to establish.
 - Any strategy is profitable
 - That these results generalise beyond one 400-day window
 - That a passing strategy would survive live execution
+- **That the run is reproducible from the protocol.** See "What green does and
+  does not mean" above. The protocol file is hashed but not read by the v1
+  path, so `--risk` / `--equity` / `--hold` can change the result without moving
+  the hash. This is the top open integrity gap.
+- **That the archive's contents are tamper-evident.** Every record carries a
+  timestamp and a strategy id, and the writer only ever appends — but no record
+  carries a hash of its own body, so a record edited in place (e.g. flipping the
+  last line to `passed: true`) leaves `verify` green unless a card happens to
+  contradict it. A per-record `rec_hash` chain over `prev_hash` is the fix and
+  is not implemented.
+- That the `research/ cannot reach TradingView` invariant is un-bypassable. It is
+  a regex scan over import statements; it misses `export … from`, `require()`,
+  case variants (the filesystem here is case-insensitive), and any path built at
+  runtime from variables. A module-graph resolution would be the real check.
 - That the anchored walk-forward actually searched anything, for the **4 of 10
   strategies that declare no parameter grid.** `donchian`, `long-with-stop`,
   `trend-pullback` and `vol-expansion` have one variant, so their folds cannot
   re-optimise and the test reduces to v1's fold count. The run reports
   `reoptimised: false` with that explanation rather than letting the word
   "walk-forward" imply a search that never happened.
+- That `profit_factor`, `sharpe`, `max_drawdown_pct` and `total_return_pct` on a
+  card cannot drift from its record: `validate.mjs` compares those four with a
+  0.5 % tolerance, so a small silent disagreement does not fail. The verdict
+  (`gate`), `unmet`, `trades` and `protocol_hash` are exact.
 
 **The portfolio basis is no longer on that list, because it was fixed.** It used
 to be an open inconsistency: `agg.totalReturnPct` compounded the five symbols
@@ -666,11 +706,40 @@ node execution/paper-trade.mjs propose buy DOGEUSD --thesis "..." --dry-run
 ```
 
 Governed by `config/risk.json`; every action and refusal lands in
-`config/audit.jsonl`. Set `"kill_switch": true` to stop everything — that is the
+`config/audit.jsonl`. Set `"kill_switch": true` to stop everything - that is the
 fastest stop available.
 
-Cancelling is **manual** — the order line is canvas-drawn and probing for it is
+Cancelling is **manual** - the order line is canvas-drawn and probing for it is
 unsafe. Two clicks: the order line's `x`, then **Cancel order**.
+
+### The order path fails closed
+
+`research/risk-engine.mjs` gates every order. An adversarial scan found three
+ways it could approve an order that a cap was supposed to stop — all confirmed
+by execution, all now fixed and pinned by selftests:
+
+- **A comma-formatted margin became zero.** `Number("1,234.56") || 0` is `0`, so
+  an account holding $1,234.56 of margin looked like it held none and the
+  cumulative-exposure cap was never constructed. The order ticket hands over
+  raw text, so this fired on any exposure ≥ $1,000 — the more you carried, the
+  more certain the guard vanished. Amounts now go through `parseAmount`, which
+  **throws** on anything that is not a finite number (including `""`, which
+  `Number` also reads as 0). An unparseable margin **rejects the order**; it
+  never becomes a default.
+- **A long could be approved with a stop at or below zero** — a stop the market
+  can never reach — while the order still reported "risk within budget". Now
+  `STOP_UNREACHABLE` / `STOP_WRONG_SIDE`. This check lives in `evaluate`, not in
+  `sizePosition`, because the backtest harness also calls `sizePosition` and
+  enforcing it there would refuse to open a position during a crash, changing
+  historical results.
+- **A `NaN` cap silently disabled itself.** `b.qty < a.qty` is never true for
+  `NaN`, and the follow-up `notional > maxNotional` clamp is `250 > NaN` — also
+  never true. One typo in `config/risk.json` produced a 10× breach while the
+  order reported the cap as honoured. Every numeric input is now checked with
+  `Number.isFinite` at entry and a non-finite one returns `INVALID_RISK_CONFIG`.
+
+Equity, price, ATR, leverage and risk fraction were already rejected on
+`NaN`/zero/negative. These three were omissions, not a broken guard.
 
 ## Compatibility
 
